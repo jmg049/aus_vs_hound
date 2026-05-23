@@ -1,0 +1,17 @@
+[package]
+name = "aus_vs_hound"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+audio_samples = { version = "1.0.9", default-features = false, features = ["bare-bones", "channels"] }
+audio_samples_io = { path = "/home/jmg/code/audio/audio_samples_io/", default-features = false, features = ["wav"] }
+hound = "3.5.1"
+libc = "0.2"
+memmap2 = "0.9"
+
+[profile.release]
+lto = true
+codegen-units = 1
+# panic = "abort"
+opt-level = 3
