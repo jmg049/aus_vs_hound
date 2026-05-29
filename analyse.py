@@ -558,6 +558,19 @@ def _run_cold_figures(cold_df: pd.DataFrame, out_dir: Path) -> None:
             fig_bulk(ch_df, "read", "avg_ms", out_dir, ch_label)
             fig_bulk(ch_df, "read", "throughput_mbs", out_dir, ch_label)
 
+            op_df = ch_df[(ch_df["operation"] == "read") & ch_df["library"].isin(["hound", "aus"])]
+            dur_labels = [f"{d}s" for d in durations_in(op_df)]
+            fig_speedup(
+                ch_df,
+                "read",
+                pivot_col="duration_s",
+                x_labels=dur_labels,
+                xlabel="Signal duration",
+                title=f"Read speedup (cold cache)  ·  audio_samples_io vs hound  ·  {ch}ch",
+                out_dir=out_dir,
+                filename=f"speedup_read_{ch_label}.png",
+            )
+
 
 def main() -> None:
     ap = argparse.ArgumentParser()
