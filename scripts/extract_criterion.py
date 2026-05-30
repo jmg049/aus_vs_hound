@@ -51,14 +51,16 @@ def parse_function_and_param(group: str, fn_name: str, param: str) -> dict | Non
     """
     # Normalise group name to operation slug used in combined.csv.
     op_map = {
-        "bulk_read": "read",
-        "bulk_write": "write",
-        "streamed_read": "streamed-read",
-        "streamed_write": "streamed-write",
+        "bulk_read": ("read", 0),
+        "bulk_write": ("write", 0),
+        "streamed_read": ("streamed-read", 0),
+        "streamed_write": ("streamed-write", 0),
+        "cold_read": ("read", 1),
+        "cold_streamed_read": ("streamed-read", 1),
     }
-    operation = op_map.get(group)
-    if operation is None:
+    if group not in op_map:
         return None
+    operation, cold_cache = op_map[group]
 
     is_streamed = operation.startswith("streamed")
 
@@ -98,6 +100,7 @@ def parse_function_and_param(group: str, fn_name: str, param: str) -> dict | Non
         "channels": int(channels),
         "duration_s": duration_s,
         "chunk_size": chunk_size,
+        "cold_cache": cold_cache,
     }
 
 
@@ -163,7 +166,7 @@ def collect(criterion_dir: Path) -> list[dict]:
             "iterations": s["n"],
             "warmup": 0,       # criterion handles warmup internally
             "chunk_size": meta["chunk_size"],
-            "cold_cache": 0,
+            "cold_cache": meta["cold_cache"],
             "avg_ms": round(s["avg_ms"], 6),
             "stddev_ms": round(s["stddev_ms"], 6),
             "p50_ms": round(s["p50_ms"], 6),

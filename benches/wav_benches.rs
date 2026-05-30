@@ -232,6 +232,20 @@ fn aus_streamed_write<T: StandardSample>(path: &Path, chunk: &AudioSamples<T>, t
     writer.finalize().unwrap();
 }
 
+// ── Page-cache eviction (Linux only) ─────────────────────────────────────────
+
+#[cfg(target_os = "linux")]
+fn drop_page_cache(path: &Path) {
+    use std::os::unix::io::AsRawFd;
+    let f = std::fs::File::open(path).unwrap();
+    unsafe { libc::posix_fadvise(f.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
+}
+
+#[cfg(not(target_os = "linux"))]
+fn drop_page_cache(_path: &Path) {
+    panic!("cold-cache benchmarks require Linux (posix_fadvise DONTNEED)");
+}
+
 // ── Bulk read ─────────────────────────────────────────────────────────────────
 
 fn bench_bulk_read(c: &mut Criterion) {
@@ -618,5 +632,128 @@ fn bench_streamed_write(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_bulk_read, bench_bulk_write, bench_streamed_read, bench_streamed_write);
+// ── Cold-cache bulk read ───────────────────────────────────────────────────────
+
+fn bench_cold_read(c: &mut Criterion) {
+    let mut group = c.benchmark_group("cold_read");
+
+    for &ch in CHANNELS {
+        for &dtype in DTYPES {
+            for &dur in DURATIONS_S {
+                let path = wav_path(dur, dtype, ch);
+                if !path.exists() {
+                    continue;
+                }
+                let fn_name = format!("hound_{dtype}_{ch}ch");
+                let param = format!("{dur}s");
+                group.bench_with_input(BenchmarkId::new(&fn_name, &param), &path, |b, p| {
+                    b.iter_custom(|iters| {
+                        let mut total = Duration::ZERO;
+                        for _ in 0..iters {
+                            drop_page_cache(p);
+                            let start = Instant::now();
+                            match dtype {
+                                "i16" => hound_read_i16(p),
+                                "i32" => hound_read_i32(p),
+                                "f32" => hound_read_f32(p),
+                                _ => unreachable!(),
+                            }
+                            total += start.elapsed();
+                        }
+                        total
+                    });
+                });
+
+                let fn_name = format!("aus_{dtype}_{ch}ch");
+                group.bench_with_input(BenchmarkId::new(&fn_name, &param), &path, |b, p| {
+                    b.iter_custom(|iters| {
+                        let mut total = Duration::ZERO;
+                        for _ in 0..iters {
+                            drop_page_cache(p);
+                            let start = Instant::now();
+                            match dtype {
+                                "i16" => aus_read::<i16>(p),
+                                "i32" => aus_read::<i32>(p),
+                                "f32" => aus_read::<f32>(p),
+                                _ => unreachable!(),
+                            }
+                            total += start.elapsed();
+                        }
+                        total
+                    });
+                });
+            }
+        }
+    }
+    group.finish();
+}
+
+// ── Cold-cache streamed read ───────────────────────────────────────────────────
+
+fn bench_cold_streamed_read(c: &mut Criterion) {
+    let mut group = c.benchmark_group("cold_streamed_read");
+
+    for &ch in CHANNELS {
+        for &dtype in DTYPES {
+            for &dur in DURATIONS_S {
+                let path = wav_path(dur, dtype, ch);
+                if !path.exists() {
+                    continue;
+                }
+                for &chunk in CHUNK_SIZES {
+                    let fn_name_h = format!("hound_{dtype}_{ch}ch_{dur}s");
+                    let fn_name_a = format!("aus_{dtype}_{ch}ch_{dur}s");
+                    let param = format!("chunk{chunk}");
+
+                    group.bench_with_input(
+                        BenchmarkId::new(&fn_name_h, &param),
+                        &(&path, chunk),
+                        |b, &(p, cs)| {
+                            b.iter_custom(|iters| {
+                                let mut total = Duration::ZERO;
+                                for _ in 0..iters {
+                                    drop_page_cache(p);
+                                    let start = Instant::now();
+                                    match dtype {
+                                        "i16" => hound_streamed_read_i16(p, cs),
+                                        "i32" => hound_streamed_read_i32(p, cs),
+                                        "f32" => hound_streamed_read_f32(p, cs),
+                                        _ => unreachable!(),
+                                    }
+                                    total += start.elapsed();
+                                }
+                                total
+                            });
+                        },
+                    );
+
+                    group.bench_with_input(
+                        BenchmarkId::new(&fn_name_a, &param),
+                        &(&path, chunk),
+                        |b, &(p, cs)| {
+                            b.iter_custom(|iters| {
+                                let mut total = Duration::ZERO;
+                                for _ in 0..iters {
+                                    drop_page_cache(p);
+                                    let start = Instant::now();
+                                    match dtype {
+                                        "i16" => aus_streamed_read::<i16>(p, cs),
+                                        "i32" => aus_streamed_read::<i32>(p, cs),
+                                        "f32" => aus_streamed_read::<f32>(p, cs),
+                                        _ => unreachable!(),
+                                    }
+                                    total += start.elapsed();
+                                }
+                                total
+                            });
+                        },
+                    );
+                }
+            }
+        }
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_bulk_read, bench_bulk_write, bench_streamed_read, bench_streamed_write, bench_cold_read, bench_cold_streamed_read);
 criterion_main!(benches);
