@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-analyse.py — publication-quality figures and markdown tables for aus_vs_hound.
+analyse.py --- figures and markdown tables for aus_vs_hound.
 
 Usage:
-    python analyse.py [--csv results/combined.csv] [--out figures/]
+    python analyse.py [--csv results.csv] [--out figures/]
 
-Requires: pip install matplotlib pandas numpy
+Requires: [uv add /] pip install matplotlib pandas numpy
 """
 
 import argparse
@@ -51,7 +51,7 @@ def setup_style() -> None:
     registered = {f.name for f in fm.fontManager.ttflist}
     font_family = "Poppins" if "Poppins" in registered else "sans-serif"
     if font_family == "sans-serif":
-        print("  [warn] Poppins not registered — using sans-serif fallback")
+        print("  [warn] Poppins not registered --- using sans-serif fallback")
 
     mpl.rcParams.update(
         {
@@ -96,7 +96,15 @@ def load(csv_path: Path) -> pd.DataFrame:
         df["cv"] = df["stddev_ms"] / df["avg_ms"]
 
     df = df.drop_duplicates(
-        subset=["library", "operation", "dtype", "channels", "duration_s", "chunk_size", "cold_cache"],
+        subset=[
+            "library",
+            "operation",
+            "dtype",
+            "channels",
+            "duration_s",
+            "chunk_size",
+            "cold_cache",
+        ],
         keep="last",
     )
     df["dtype"] = pd.Categorical(df["dtype"], categories=DTYPE_ORDER, ordered=True)
@@ -138,9 +146,7 @@ _LEGEND_HANDLES_3 = [
 ]
 
 
-def _add_shared_legend(
-    fig: plt.Figure, handles=None, bottom_pad: float = 0.10
-) -> None:
+def _add_shared_legend(fig: plt.Figure, handles=None, bottom_pad: float = 0.10) -> None:
     if handles is None:
         handles = _LEGEND_HANDLES_2
     fig.legend(
@@ -176,11 +182,11 @@ def _grouped_bars(
     if m_vals is not None:
         w = BAR_W * 0.82  # slightly narrower for 3-bar groups
         ax.bar(x - w, h_vals, w, color=HOUND_COLOR, zorder=3)
-        ax.bar(x,     a_vals, w, color=AUS_COLOR,   zorder=3)
-        ax.bar(x + w, m_vals, w, color=MMAP_COLOR,  zorder=3)
+        ax.bar(x, a_vals, w, color=AUS_COLOR, zorder=3)
+        ax.bar(x + w, m_vals, w, color=MMAP_COLOR, zorder=3)
     else:
         ax.bar(x - BAR_W / 2, h_vals, BAR_W, color=HOUND_COLOR, zorder=3)
-        ax.bar(x + BAR_W / 2, a_vals, BAR_W, color=AUS_COLOR,   zorder=3)
+        ax.bar(x + BAR_W / 2, a_vals, BAR_W, color=AUS_COLOR, zorder=3)
     ax.set_xticks(x)
     ax.set_xticklabels(x_labels)
     if first:
@@ -226,7 +232,12 @@ def fig_bulk(
                 m_vals = m[metric].tolist()
 
         _grouped_bars(
-            ax, x_labels, h[metric].tolist(), a[metric].tolist(), ylabel, i == 0,
+            ax,
+            x_labels,
+            h[metric].tolist(),
+            a[metric].tolist(),
+            ylabel,
+            i == 0,
             m_vals=m_vals,
         )
         ax.set_xlabel("Signal duration")
@@ -237,7 +248,7 @@ def fig_bulk(
     op_label = "Read" if operation == "read" else "Write"
     met_label = "Throughput" if use_tp else "Time"
     fig.suptitle(
-        f"WAV {op_label} — {met_label} by sample type  ·  {ch_label}",
+        f"WAV {op_label} --- {met_label} by sample type  ·  {ch_label}",
         fontsize=FS_TITLE,
         fontweight="semibold",
         y=1.02,
@@ -252,7 +263,12 @@ def fig_bulk(
 
 
 def fig_streamed(
-    df: pd.DataFrame, operation: str, metric: str, duration: int, out_dir: Path, ch_label: str
+    df: pd.DataFrame,
+    operation: str,
+    metric: str,
+    duration: int,
+    out_dir: Path,
+    ch_label: str,
 ) -> None:
     """
     X-axis: chunk size  (evenly spaced categories, log-scale labels)
@@ -288,7 +304,7 @@ def fig_streamed(
     op_label = "Streamed Read" if operation == "streamed-read" else "Streamed Write"
     met_label = "Throughput" if use_tp else "Time"
     fig.suptitle(
-        f"{op_label} — {met_label}  ·  {duration}s signal  ·  {ch_label}",
+        f"{op_label} --- {met_label}  ·  {duration}s signal  ·  {ch_label}",
         fontsize=FS_TITLE,
         fontweight="semibold",
         y=1.02,
@@ -397,7 +413,8 @@ def _bulk_rows(df: pd.DataFrame, operation: str, ch: int) -> list[dict]:
     ai = data[data["library"] == "aus"].set_index(["dtype", "duration_s"])
     mi = (
         data[data["library"] == "mmap"].set_index(["dtype", "duration_s"])
-        if operation == "read" else None
+        if operation == "read"
+        else None
     )
     rows = []
     for dtype in dtypes_in(data):
@@ -413,7 +430,9 @@ def _bulk_rows(df: pd.DataFrame, operation: str, ch: int) -> list[dict]:
                 "hound cv": f"{h['cv']:.3f}",
                 "aus avg (ms)": f"{a['avg_ms']:.3f}",
                 "aus cv": f"{a['cv']:.3f}",
-                "speedup (±1σ)": _speedup_label(h["avg_ms"], a["avg_ms"], h["stddev_ms"], a["stddev_ms"]),
+                "speedup (±1σ)": _speedup_label(
+                    h["avg_ms"], a["avg_ms"], h["stddev_ms"], a["stddev_ms"]
+                ),
             }
             if mi is not None:
                 try:
@@ -427,7 +446,9 @@ def _bulk_rows(df: pd.DataFrame, operation: str, ch: int) -> list[dict]:
     return rows
 
 
-def _streamed_rows(df: pd.DataFrame, operation: str, duration: int, ch: int) -> list[dict]:
+def _streamed_rows(
+    df: pd.DataFrame, operation: str, duration: int, ch: int
+) -> list[dict]:
     data = df[
         (df["operation"] == operation)
         & (df["duration_s"] == duration)
@@ -450,7 +471,9 @@ def _streamed_rows(df: pd.DataFrame, operation: str, duration: int, ch: int) -> 
                     "hound cv": f"{h['cv']:.3f}",
                     "aus avg (ms)": f"{a['avg_ms']:.3f}",
                     "aus cv": f"{a['cv']:.3f}",
-                    "speedup (±1σ)": _speedup_label(h["avg_ms"], a["avg_ms"], h["stddev_ms"], a["stddev_ms"]),
+                    "speedup (±1σ)": _speedup_label(
+                        h["avg_ms"], a["avg_ms"], h["stddev_ms"], a["stddev_ms"]
+                    ),
                 }
             )
     return rows
@@ -477,7 +500,11 @@ def write_markdown(df: pd.DataFrame, out_dir: Path, cache_label: str = "warm") -
         for op, label in [("read", "Read"), ("write", "Write")]:
             op_df = df[(df["operation"] == op) & (df["channels"] == ch)]
             if not op_df.empty:
-                lines += [f"### {label}\n", _md_rows_to_table(_bulk_rows(df, op, ch)), ""]
+                lines += [
+                    f"### {label}\n",
+                    _md_rows_to_table(_bulk_rows(df, op, ch)),
+                    "",
+                ]
 
         if not is_cold:
             for op, label in [
@@ -487,7 +514,7 @@ def write_markdown(df: pd.DataFrame, out_dir: Path, cache_label: str = "warm") -
                 op_df = df[(df["operation"] == op) & (df["channels"] == ch)]
                 for dur in durations_in(op_df):
                     lines += [
-                        f"### {label} — {dur}s signal\n",
+                        f"### {label} --- {dur}s signal\n",
                         _md_rows_to_table(_streamed_rows(df, op, dur, ch)),
                         "",
                     ]
@@ -511,7 +538,9 @@ def _run_warm_figures(warm_df: pd.DataFrame, out_dir: Path) -> None:
             fig_bulk(ch_df, op, "avg_ms", out_dir, ch_label)
             fig_bulk(ch_df, op, "throughput_mbs", out_dir, ch_label)
 
-            op_df = ch_df[(ch_df["operation"] == op) & ch_df["library"].isin(["hound", "aus"])]
+            op_df = ch_df[
+                (ch_df["operation"] == op) & ch_df["library"].isin(["hound", "aus"])
+            ]
             dur_labels = [f"{d}s" for d in durations_in(op_df)]
             fig_speedup(
                 ch_df,
@@ -536,7 +565,9 @@ def _run_warm_figures(warm_df: pd.DataFrame, out_dir: Path) -> None:
                 fig_streamed(ch_df, op, "throughput_mbs", dur, out_dir, ch_label)
 
                 chunk_labels = [fmt_chunk(c) for c in chunks_in(dur_df)]
-                op_label = "Streamed Read" if op == "streamed-read" else "Streamed Write"
+                op_label = (
+                    "Streamed Read" if op == "streamed-read" else "Streamed Write"
+                )
                 fig_speedup(
                     dur_df,
                     op,
@@ -558,7 +589,9 @@ def _run_cold_figures(cold_df: pd.DataFrame, out_dir: Path) -> None:
             fig_bulk(ch_df, "read", "avg_ms", out_dir, ch_label)
             fig_bulk(ch_df, "read", "throughput_mbs", out_dir, ch_label)
 
-            op_df = ch_df[(ch_df["operation"] == "read") & ch_df["library"].isin(["hound", "aus"])]
+            op_df = ch_df[
+                (ch_df["operation"] == "read") & ch_df["library"].isin(["hound", "aus"])
+            ]
             dur_labels = [f"{d}s" for d in durations_in(op_df)]
             fig_speedup(
                 ch_df,
@@ -593,7 +626,9 @@ def main() -> None:
 
     ops = sorted(df["operation"].unique())
     chs = channels_in(df)
-    print(f"  {len(df)} rows | ops: {ops} | dtypes: {list(df['dtype'].unique())} | channels: {chs}")
+    print(
+        f"  {len(df)} rows | ops: {ops} | dtypes: {list(df['dtype'].unique())} | channels: {chs}"
+    )
     print(f"  warm rows: {len(warm_df)} | cold rows: {len(cold_df)}")
 
     if not warm_df.empty:
@@ -611,7 +646,7 @@ def main() -> None:
         write_markdown(cold_df, out_dir, "cold")
 
     n = len(list(out_dir.glob("*.png")))
-    print(f"\nDone — {n} figures + markdown → {out_dir}/")
+    print(f"\nDone --- {n} figures + markdown → {out_dir}/")
 
 
 if __name__ == "__main__":

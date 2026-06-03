@@ -326,7 +326,7 @@ fn bench_bulk_write(c: &mut Criterion) {
                             })
                             .collect();
                         let aus_signal = audio_samples_io::read::<_, i16>(
-                            &wav_path(dur.min(10), "i16", 1),
+                            &wav_path(dur, "i16", 1),
                         )
                         .unwrap_or_else(|_| {
                             AudioSamples::<i16>::zeros_mono(
@@ -366,7 +366,7 @@ fn bench_bulk_write(c: &mut Criterion) {
                             })
                             .collect();
                         let aus_signal = audio_samples_io::read::<_, i32>(
-                            &wav_path(dur.min(10), "i32", 1),
+                            &wav_path(dur, "i32", 1),
                         )
                         .unwrap_or_else(|_| {
                             AudioSamples::<i32>::zeros_mono(
@@ -405,7 +405,7 @@ fn bench_bulk_write(c: &mut Criterion) {
                             })
                             .collect();
                         let aus_signal = audio_samples_io::read::<_, f32>(
-                            &wav_path(dur.min(10), "f32", 1),
+                            &wav_path(dur, "f32", 1),
                         )
                         .unwrap_or_else(|_| {
                             AudioSamples::<f32>::zeros_mono(

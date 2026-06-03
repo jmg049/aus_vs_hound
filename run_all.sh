@@ -10,7 +10,7 @@ CHANNELS="${CHANNELS:-1,2}"
 # Durations (seconds) swept for every benchmark kind
 DURATIONS=(1 5 10 30 60 300 600)
 
-# Iterations per duration — scale down for longer runs
+# Iterations per duration --- scale down for longer runs
 declare -A ITER_FOR_DUR=( [1]=10000 [5]=10000 [10]=10000 [30]=5000 [60]=5000 [300]=1000 [600]=1000 )
 
 # Chunk sizes swept only for streaming benchmarks

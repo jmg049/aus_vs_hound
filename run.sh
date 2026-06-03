@@ -29,7 +29,7 @@ NAME=""
 
 usage() {
     cat <<'EOF'
-run.sh — targeted aus_vs_hound benchmark runner
+run.sh --- targeted aus_vs_hound benchmark runner
 
 USAGE:
   bash run.sh [OPTIONS]

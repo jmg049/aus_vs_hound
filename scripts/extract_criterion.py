@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-extract_criterion.py — convert criterion benchmark output to the combined.csv
+extract_criterion.py --- convert criterion benchmark output to the combined.csv
 format consumed by analyse.py.
 
 Criterion stores raw per-sample timing in:
@@ -208,7 +208,7 @@ def main() -> None:
 
     criterion_dir = Path(args.criterion_dir)
     if not criterion_dir.exists():
-        print(f"error: {criterion_dir} not found — run `cargo bench` first", file=sys.stderr)
+        print(f"error: {criterion_dir} not found --- run `cargo bench` first", file=sys.stderr)
         sys.exit(1)
 
     rows = collect(criterion_dir)

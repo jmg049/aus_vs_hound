@@ -1,37 +1,120 @@
 ---
-author: Dr Jack Geraghty
+slug: working-with-wav-files
+title: "Working with WAV Files in Rust"
+kicker: Audio & Signal Processing
+date: 2026-06-02
+readMins: 40
+tags: [Rust, Audio, Benchmarks]
+deck: "A comparison of Hound and audio_samples for reading and writing WAV."
+author: "Dr Jack Geraghty"
 ---
 
-# Working with WAV Files in Rust
+<style>
+/* Mobile tuning for this article. Everything visual is gated behind the
+   640px media query, so the desktop layout is unchanged. If your theme has
+   a content wrapper (e.g. .post-content), prefix these selectors with it to
+   avoid touching site chrome (nav/footer tables, etc.). */
+@media (max-width: 640px) {
+  /* Tables wrap their text to fit the screen; shrink slightly so the
+     numeric tables stay comfortable at phone widths. */
+  table { font-size: 0.85em; }
 
-## A comparison of Hound and audio_samples for reading and writing WAV 
+  /* Code samples keep horizontal scroll, but shrink slightly so more of each
+     line is visible before the reader has to scroll sideways. */
+  pre {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    font-size: 0.78rem;
+    line-height: 1.45;
+  }
+  pre code { white-space: pre; }
+
+  /* Charts are full-width but their axis labels are small at phone widths, so
+     surface the tap-to-enlarge affordance. */
+  figure { margin: 1.4em 0; }
+  figure a.chart-zoom::after {
+    content: "Tap chart to enlarge";
+    display: block;
+    margin-top: 0.4em;
+    font-size: 0.75em;
+    color: #777;
+    text-align: center;
+  }
+}
+
+/* Tables: tighter styling for data-heavy result tables in this article. */
+table {
+  margin: 1.4em 0;
+  font-size: 0.92em;
+  line-height: 1.4;
+}
+td { vertical-align: top; }
+thead th { border-bottom: 2px solid #b3b3b3; }
+
+/* Charts open at full resolution in an in-page lightbox (all viewports). */
+figure a.chart-zoom { display: block; }
+figure img { cursor: zoom-in; }
+
+#chart-lightbox {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background: rgba(0, 0, 0, 0.85);
+  z-index: 9999;
+  cursor: zoom-out;
+}
+#chart-lightbox.open { display: flex; }
+#chart-lightbox img {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  background: #fff;
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+}
+#chart-lightbox .close {
+  position: absolute;
+  top: 0.4rem;
+  right: 1rem;
+  font-size: 2.2rem;
+  line-height: 1;
+  color: #fff;
+  text-decoration: none;
+  cursor: pointer;
+}
+</style>
+
+<div id="chart-lightbox" role="dialog" aria-modal="true" aria-hidden="true">
+<span class="close" aria-label="Close">&times;</span>
+<img src="" alt="">
+</div>
 
 **Disclosure:** I am the developer of the crates evaluated in this article: [`audio_samples`](https://github.com/jmg049/audio_samples), [`audio_samples_io`](https://github.com/jmg049/audio_samples_io), [`wavers`](https://github.com/jmg049/wavers), [`i24`](https://github.com/jmg049/i24), and [`spectrograms`](https://github.com/jmg049/spectrograms). To support independent verification, the benchmark harness, raw timing data, and analysis scripts are published alongside the article.
 
 ---
 
 <figure style="margin: 2em 0; text-align: center;">
-<img src="figures/speedup_read_1ch_cold.png" alt="Heatmap showing bulk read speedup of audio_samples_io over hound across signal durations and sample types, mono, approximately cold cache" style="max-width: 100%; height: auto;">
+<a class="chart-zoom" href="/assets/images/blog/working-with-wav-files/criterion_out/speedup_read_1ch_cold.png" target="_blank" rel="noopener"><img src="/assets/images/blog/working-with-wav-files/criterion_out/speedup_read_1ch_cold.png" alt="Heatmap showing bulk read speedup of audio_samples_io over hound across signal durations and sample types, mono, approximately cold cache" style="max-width: 100%; height: auto;"></a>
 <figcaption style="font-size: 0.85em; color: #555; margin-top: 0.6em; text-align: left; max-width: 680px; margin-left: auto; margin-right: auto; line-height: 1.5;">
-Bulk read speedup of <code>audio_samples_io</code> over <code>hound</code> (speedup = <code>hound</code> avg / <code>aus</code> avg), mono, approximately cold cache. Sample types: <code>i16</code>, <code>i32</code>, <code>f32</code> at 44,100 Hz; 30 iterations per cell. This represents storage-bound single-pass performance — the practical floor for most workloads. Warm-cache and repeated-access results are in the sections below.
+Bulk read speedup of <code>audio_samples_io</code> over <code>hound</code> (speedup = <code>hound</code> avg / <code>aus</code> avg), mono, approximately cold cache. Sample types: <code>i16</code>, <code>i32</code>, <code>f32</code> at 44,100 Hz; 100 Criterion samples per cell. This represents storage-bound single-pass performance, the practical floor for most workloads. Warm-cache and repeated-access results are in the sections below.
 </figcaption>
 </figure>
 
-> **Quick reference**
-> 
-> | Use `hound` when | Use `audio_samples_io` when |
-> |:---|:---|
-> | Zero transitive dependencies is a hard requirement (embedded, WASM, audited supply chains) | Performance matters — faster reads at every cache regime, faster `i32`/`f32` writes |
-> | Integrating with an existing `hound`-based codebase | You want a typed, channel-aware API that encodes format invariants at compile time |
-> | Write-only workload with `i16` at chunk sizes ≤ 512 samples (the one remaining parity case) | Your audio pipeline continues beyond I/O — the same `AudioSamples<T>` type carries through resampling, filtering, and spectral analysis |
+**Quick reference**
 
-WAV files (`.wav`) are among the most common formats for storing sampled audio data. The format is uncompressed by default, preserving quality at the cost of file size, though compressed variants exist.
+ | Use `hound` when | Use `audio_samples_io` when |
+ |:---|:---|
+ | Zero transitive dependencies is a hard requirement (embedded, WASM, audited supply chains) | Performance matters: faster reads at every cache regime; faster writes across all dtypes at medium-to-large chunk sizes |
+ | Integrating with an existing `hound`-based codebase | You want a typed, channel-aware API that encodes format invariants at compile time |
+
+WAV files (`.wav`) are among the most common formats for storing sampled audio data. It most commonly stores uncompressed linear PCM, preserving the source samples exactly at the cost of file size, though the container can also carry compressed codecs.
 
 In Rust, the de facto library for reading and writing `.wav` files is [`hound` by Ruuda](https://github.com/ruuda/hound), with over 600 stars on GitHub at the time of writing.
 
 [`audio_samples`](https://github.com/jmg049/audio_samples) is a crate I have developed over the past two years, building on earlier work in the now-archived [`wavers`](https://github.com/jmg049/wavers) crate. It provides a unified, channel-aware representation of sampled audio data with a broad range of optional processing capabilities: statistical analysis, resampling, editing, filtering, spectral transforms, parametric EQ, and voice activity detection (VAD), among others. Spectral analysis is implemented via the [`spectrograms`](https://github.com/jmg049/spectrograms) crate, which was spun out of `audio_samples` to stand on its own; `audio_samples` integrates it fully through wrapper functions, passing the internal `ndarray` representation through to the underlying spectrogram routines.
-
-
 
 `audio_samples` itself does not handle file I/O. That responsibility belongs to the companion crate [`audio_samples_io`](https://github.com/jmg049/audio_samples_io), which adds `.wav` and `.flac` read/write support (FLAC is a story for another day). The separation is intentional: `audio_samples` operates on audio already in memory, while `audio_samples_io` manages the disk-facing layer.
 
@@ -75,6 +158,7 @@ fn main() {
 
 The type parameter on `.samples::<T>()` must match the file's bit depth and sample format; `hound` will return an error at runtime otherwise.
 All samples land in a flat `Vec`; interleaving across channels is not unwrapped for you.
+`.samples()` is `hound`'s only read primitive: there is no separate bulk-read or block-read API, so all reads go through the same per-sample iterator regardless of the caller's access pattern.
 
 ##### Writing
 
@@ -184,8 +268,7 @@ The chunk loop here reflects a realistic producer pattern where audio arrives in
 
 `audio_samples` takes a different philosophy: audio is represented as a typed, channel-aware struct (`AudioSamples<T>`) rather than a flat iterator of interleaved values.
 The I/O layer lives in the companion crate `audio_samples_io`, which exposes both one-shot and streamed read/write paths.
-The library owns the concept of frames vs.
-samples, so you get that structure for free rather than having to reconstruct it yourself.
+The library owns the concept of frames vs. samples, so you get that structure for free rather than having to reconstruct it yourself.
 
 ##### Reading
 
@@ -227,15 +310,15 @@ fn main() {
 }
 ```
 
-A core design principle of `audio_samples` is that several classes of invalid audio should be *unrepresentable*. The `sample_rate!` macro produces a `NonZeroU32` at compile time: a zero sample rate is a build error, not a runtime panic. Channel count is enforced by `NonZeroU16`, making a zero-channel signal impossible to construct. Audio length uses `NonZeroUsize`, so empty audio cannot exist. These constraints are not just documentation conventions; they are part of the type signatures. Code that compiles is guaranteed to carry a non-zero sample rate, at least one channel, and at least one sample.
+A core design principle of `audio_samples` is that several degenerate cases are made *unrepresentable* at the type level. The `sample_rate!` macro produces a `NonZeroU32` at compile time: a zero sample rate is a build error, not a runtime panic. Channel count is enforced by `NonZeroU16`, making a zero-channel signal impossible to construct. Frame count uses `NonZeroUsize`, ruling out zero-length audio. The sample data itself is stored as a `NonEmptyVec`, preventing construction of a signal with an allocated but empty buffer. These constraints are not just documentation conventions; they are part of the type signatures. Code that compiles is guaranteed to carry a non-zero sample rate, at least one channel, at least one frame, and at least one sample.
 
 Because all the metadata travels with the `AudioSamples` value, there is no separate spec struct to fill out; the writer derives everything it needs from the signal itself.
-For the one-shot `write()` path, there is no manual `finalize()` step — the write is completed before `write()` returns. The streamed write path does retain an explicit `finalize()` call so that errors during chunk flushing can be surfaced to the caller.
+For the one-shot `write()` path, there is no manual `finalize()` step: the write is completed before `write()` returns. The streamed write path does retain an explicit `finalize()` call so that errors during chunk flushing can be surfaced to the caller.
 
 ##### Streamed Reading
 
 `audio_samples_io` has a dedicated streaming API.
-You open a `StreamedReader`, read metadata from it directly, allocate a buffer sized to match, then pull frames in a loop — all from the same open handle:
+You open a `StreamedReader`, read metadata from it directly, allocate a buffer sized to match, then pull frames in a loop, all from the same open handle:
 
 ```rust
 use audio_samples::AudioSamples;
@@ -263,7 +346,7 @@ fn main() {
 The notable design difference from `hound` here is that `read_frames_into` *requires* you to hand it a buffer; the API makes reuse the only option.
 With `hound` the natural idiom is `.collect()`, which allocates a fresh `Vec` each iteration; you can avoid that by using `Vec::with_capacity(chunk_size)` and `clear()` + `extend()` in the loop, but the API does not push you there.
 The `remaining_frames()` counter also gives an explicit termination condition rather than relying on an empty read.
-The tradeoff is some call-site ceremony: constructing the buffer requires explicit `NonZeroUsize` and `NonZeroU32` values, obtained via `.unwrap()` in the example above; `hound`'s equivalent parameters are plain integers.
+The trade-off is some call-site ceremony: constructing the buffer requires explicit `NonZeroUsize` and `NonZeroU32` values, obtained via `.unwrap()` in the example above; `hound`'s equivalent parameters are plain integers.
 
 For multi-channel files, replace `zeros_mono` with `zeros_multi`:
 
@@ -312,10 +395,11 @@ Unlike `hound`'s `write_sample`, `write_frames` accepts a whole `AudioSamples` c
 ### Methodology
 
 All benchmarks were run on a single machine in release mode with link-time optimisation enabled (`lto = true`, `codegen-units = 1`, `opt-level = 3`).
-The timing harness is a hand-written Rust program rather than a framework such as `criterion` or `divan`; this keeps the control flow and usage code for both libraries identical and directly readable.
-The trade-off is that there is no automatic outlier rejection or throughput normalisation, so the raw numbers should be read in conjunction with the standard deviation and percentile columns rather than the mean alone.
+The timing harness uses the [`criterion`](https://github.com/bheisler/criterion.rs) benchmarking framework (`benches/wav_benches.rs`).
+Criterion determines iteration counts adaptively based on measurement time budgets, performs automatic outlier detection, and reports confidence intervals.
+The control flow and usage code for both libraries are identical within the benchmark functions; both use the same `b.iter_custom` timing wrapper, which times each individual iteration and accumulates elapsed time before returning the total to Criterion.
 
-The benchmark harness (`src/main.rs`), raw per-iteration results (`results/`), and analysis and plotting scripts (`analyse.py`) are all available in the same repository as this article. All reported figures can be reproduced by running `cargo run --release` followed by `python analyse.py`.
+The benchmark harness (`benches/wav_benches.rs`), raw per-iteration results (CSV format), and analysis and plotting scripts (`analyse.py`) are all available in the same repository as this article. All reported figures can be reproduced by running `cargo bench` followed by `python analyse.py --csv criterion_out.csv --out criterion_out/`.
 
 #### Crate versions
 
@@ -323,7 +407,7 @@ The benchmark harness (`src/main.rs`), raw per-iteration results (`results/`), a
 |:------|:--------|
 | `hound` | 3.5.1 |
 | `audio_samples` | 1.0.9 (`bare-bones` feature) |
-| `audio_samples_io` | 0.3.0 (`wav` feature) |
+| `audio_samples_io` | 0.3.1 (`wav` feature) |
 
 #### Test environment
 
@@ -341,7 +425,7 @@ The benchmark harness (`src/main.rs`), raw per-iteration results (`results/`), a
 | SMT | disabled |
 | CPU affinity | none (affinity list: CPUs 0,1) |
 | ASLR | enabled (level 2, full) |
-| Filesystem | ext4 — `rw,relatime` (no compression, no CoW) |
+| Filesystem | ext4 (`rw,relatime`, no compression, no CoW) |
 
 Several settings are worth noting as potential confounds.
 
@@ -375,9 +459,9 @@ For the streaming conditions, chunk sizes of 512, 1024, 4096, 8192, and 16384 sa
 
 #### Measurement
 
-Iteration counts were scaled by signal duration to keep total benchmark time tractable while retaining statistical depth at shorter durations: **10,000 measured iterations** for signals of 1–10 s, **5,000** for 30–60 s, and **1,000** for 300–600 s.
-All configurations used **50 warmup iterations**.
-Warmup iterations are timed the same way but their results are discarded; they exist to bring file-system caches to a steady state and allow the allocator to settle before measurement begins.
+Criterion determines iteration counts adaptively from measurement time budgets (default: 3 s warmup, 5 s measurement per benchmark).
+**100 samples** were collected per benchmark configuration; each sample consists of one or more timed iterations, with the per-sample iteration count chosen by Criterion based on the per-iteration duration.
+Criterion's warmup phase brings file-system caches to a steady state and allows the allocator to settle before measurement begins.
 Each iteration opens or creates the file from scratch; no file handle is reused across iterations.
 
 `std::hint::black_box` is applied to the result of every read to prevent the compiler from eliminating the work as dead code.
@@ -386,40 +470,37 @@ The reported statistics are:
 
 | Statistic | Meaning |
 |:----------|:--------|
-| avg | arithmetic mean across all measured iterations (10,000 for 1–10 s; 5,000 for 30–60 s; 1,000 for 300–600 s; warmup iterations excluded) |
-| σ | standard deviation |
-| p50 | median |
-| p90 | 90th percentile |
-| p99 | 99th percentile |
+| avg | arithmetic mean across all 100 collected Criterion samples |
+| cv | coefficient of variation (σ / mean); values above 0.5 indicate high variance |
 
 All times are in milliseconds.
-Where σ is high or there is a large gap between p50 and p99, OS scheduling or filesystem jitter is likely a contributing factor.
+Where cv is high, OS scheduling or filesystem jitter is likely a contributing factor.
 
 ### Benchmark Results
 
 #### Bulk Read
 
 <figure style="margin: 2em 0; text-align: center;">
-<img src="figures/bulk_read_throughput_1ch.png" alt="Line chart: bulk read throughput in MB/s vs signal duration for hound and audio_samples_io, mono, warm cache" style="max-width: 100%; height: auto;">
+<a class="chart-zoom" href="/assets/images/blog/working-with-wav-files/criterion_out/bulk_read_throughput_1ch.png" target="_blank" rel="noopener"><img src="/assets/images/blog/working-with-wav-files/criterion_out/bulk_read_throughput_1ch.png" alt="Line chart: bulk read throughput in MB/s vs signal duration for hound and audio_samples_io, mono, warm cache" style="max-width: 100%; height: auto;"></a>
 <figcaption style="font-size: 0.85em; color: #555; margin-top: 0.6em; text-align: left; max-width: 680px; margin-left: auto; margin-right: auto; line-height: 1.5;">
-<strong>Figure 1 — Bulk read throughput, mono (warm cache).</strong> <em>Y-axis:</em> throughput (MB/s), computed as logical WAV file size divided by mean read time per iteration. <em>X-axis:</em> signal duration (seconds, log scale, 1–600 s). Sample types: <code>i16</code>, <code>i32</code>, <code>f32</code> at 44,100 Hz; mono (1-channel). Iteration counts: 10,000 (1–10 s), 5,000 (30–60 s), 1,000 (300–600 s); 50 warmup iterations excluded. Shaded bands: ±1σ. Cache condition: warm — files are page-cache resident after warmup completes.
+<strong>Figure 1 — Bulk read throughput, mono (warm cache).</strong> <em>Y-axis:</em> throughput (MB/s), computed as logical WAV file size divided by mean read time. <em>X-axis:</em> signal duration (seconds, log scale, 1–600 s). Sample types: <code>i16</code>, <code>i32</code>, <code>f32</code> at 44,100 Hz; mono (1-channel). 100 Criterion samples; Criterion warmup phase excluded. Cache condition: warm — files are page-cache resident after warmup completes.
 </figcaption>
 </figure>
 
 <figure style="margin: 2em 0; text-align: center;">
-<img src="figures/speedup_read_1ch.png" alt="Line chart: bulk read speedup ratio (hound avg / aus avg) vs signal duration, mono, warm cache" style="max-width: 100%; height: auto;">
+<a class="chart-zoom" href="/assets/images/blog/working-with-wav-files/criterion_out/speedup_read_1ch.png" target="_blank" rel="noopener"><img src="/assets/images/blog/working-with-wav-files/criterion_out/speedup_read_1ch.png" alt="Line chart: bulk read speedup ratio (hound avg / aus avg) vs signal duration, mono, warm cache" style="max-width: 100%; height: auto;"></a>
 <figcaption style="font-size: 0.85em; color: #555; margin-top: 0.6em; text-align: left; max-width: 680px; margin-left: auto; margin-right: auto; line-height: 1.5;">
-<strong>Figure 2 — Bulk read speedup over <code>hound</code>, mono (warm cache).</strong> <em>Y-axis:</em> speedup ratio (hound avg ÷ aus avg); values above 1 indicate <code>audio_samples_io</code> is faster. <em>X-axis:</em> signal duration (seconds, log scale). Sample types: <code>i16</code>, <code>i32</code>, <code>f32</code>; mono (1-channel). Same iteration counts as Figure 1. Error bars: propagated ±1σ uncertainty, σ<sub>R</sub> = R√((σ<sub>H</sub>/H)² + (σ<sub>A</sub>/A)²); full per-condition values are in <code>results/</code>.
+<strong>Figure 2 — Bulk read speedup over <code>hound</code>, mono (warm cache).</strong> <em>Y-axis:</em> speedup ratio (hound avg ÷ aus avg); values above 1 indicate <code>audio_samples_io</code> is faster. <em>X-axis:</em> signal duration (seconds, log scale). Sample types: <code>i16</code>, <code>i32</code>, <code>f32</code>; mono (1-channel). Same Criterion sample count as Figure 1. Error bars: propagated ±1σ uncertainty, σ<sub>R</sub> = R√((σ<sub>H</sub>/H)² + (σ<sub>A</sub>/A)²); full per-condition values are in the published CSV.
 </figcaption>
 </figure>
 
 `audio_samples_io` is substantially faster than `hound` for bulk reads across every dtype and duration tested.
 The speedup is highest at intermediate durations and shows a pronounced discontinuity around the processor's last-level cache (LLC) capacity.
-For `i16`, the speedup peaks above 150× for files that fit in the LLC (up to ≈ 300 s mono at 44,100 Hz on this machine), then drops to ≈ 11× at 600 s once the file exceeds the LLC and reads are bounded by DRAM bandwidth.
-For `i32` and `f32` (twice as many bytes per sample), the LLC boundary falls earlier — between 60 s and 300 s — and the speedup there is 4–7×; at shorter durations where both sample types still fit in cache it is 34–119× depending on duration.
-In absolute terms, `hound` reads a 600 s `i16` mono file (≈ 50 MB) in 305 ms on average; `audio_samples_io` reads the same file in 28.8 ms.
-The spread across iterations is also much tighter for `audio_samples_io`: its standard deviation is consistently an order of magnitude smaller than `hound`'s at short and medium durations, and the gap between p50 and p99 is narrow.
-`hound`'s p99 climbs noticeably above its mean at longer durations, reflecting the accumulation of per-sample overhead over many thousands of loop iterations.
+For `i16`, the speedup peaks at approximately 105× at 60 s, where the 5.3 MB file is firmly LLC-resident.
+The 300 s file (≈ 26 MB) also fits within the 32 MiB LLC and maintains a 53× speedup; the 600 s file (≈ 50 MB) spills to DRAM and the speedup falls to 8.6×.
+For `i32` and `f32` (four bytes per sample), the LLC boundary falls between 60 s and 300 s: the speedup is approximately 29× for both `i32` and `f32` at 60 s (LLC-resident), dropping to approximately 3× for `i32` and 2.5× for `f32` at 300–600 s once files exceed the LLC.
+In absolute terms, `hound` reads a 600 s `i16` mono file (≈ 50 MB) in 272 ms on average; `audio_samples_io` reads the same file in 31.7 ms.
+The spread across samples is also much tighter for `audio_samples_io`: its standard deviation is consistently smaller than `hound`'s at short and medium durations.
 
 The table below shows the `audio_samples_io` speedup over `hound` across all tested durations for mono signals. The figures above show the underlying throughput curves.
 
@@ -427,194 +508,184 @@ The table below shows the `audio_samples_io` speedup over `hound` across all tes
 
 | Duration | `i16` speedup | `i32` speedup | `f32` speedup |
 |:---------|-------------:|-------------:|-------------:|
-| 1 s  | 23× | 12× | 26× |
-| 5 s  | 66× | 28× | 60× |
-| 10 s | 86× | 34× | 71× |
-| 30 s | 117× | 49× | 94× |
-| 60 s | 153× | 54× | 119× |
-| 300 s | 154× | 4× | 7× |
-| 600 s | 11× | 4× | 7× |
+| 1 s  | 22× | 10× | 8× |
+| 5 s  | 51× | 25× | 17× |
+| 10 s | 36× | 27× | 19× |
+| 30 s | 54× | 29× | 22× |
+| 60 s | 105× | 29× | 21× |
+| 300 s | 53× | 3.4× | 2.5× |
+| 600 s | 8.6× | 3.3× | 2.5× |
 
-> Speedup = `hound` avg / `aus` avg (values > 1 mean `audio_samples_io` is faster). Propagated 1σ uncertainty (σ_R = R√((σ_H/H)² + (σ_A/A)²)) is included in the full per-condition tables in `results/`.
+> Speedup = `hound` avg / `aus` avg (values > 1 mean `audio_samples_io` is faster). Propagated 1σ uncertainty (σ_R = R√((σ_H/H)² + (σ_A/A)²)) is included in the full per-condition data in the published CSV.
 
-The step-change in speedup between 60 s / 300 s and 600 s reflects the LLC capacity of this machine.
-For `i16` mono, the file at 300 s is ≈ 26 MB and fits in the LLC; with thousands of warmup-plus-measured iterations the working set becomes LLC-resident, consistent with `audio_samples_io`'s read-into-Vec path reading at L3 bandwidth and producing the high 154× figure.
-At 600 s the `i16` file is ≈ 50 MB and spills to DRAM, halving throughput; `hound`'s per-sample cost is unchanged, so the speedup collapses to 11×.
-For `i32` and `f32` (twice as many bytes per sample) the LLC boundary falls a duration earlier — already at 300 s the 50 MB file is DRAM-bound — so the transition appears between 60 s (34–119×) and 300 s (4–7×).
-
-A raw memory-map baseline (opening the file, mapping it read-only with a sequential-access hint, and casting the byte slice directly) was benchmarked alongside both libraries.
-At short and medium durations where the file is LLC-resident, `audio_samples_io` is measurably faster than the mmap baseline (the `BufReader::read_to_end` path, once the allocation is warmed, outpaces mmap's per-page-fault cost).
-At 600 s, where the file exceeds the LLC and reads are DRAM-bound, `audio_samples_io` (28.8 ms) is noticeably slower than mmap (8.7 ms), which reflects the difference between a kernel copy-to-userspace and a direct mapping; the mmap path avoids one copy.
-`hound`'s throughput for `i16` warm-cache reads is approximately 166 MB/s, around 35× below the mmap ceiling at the same duration.
+The step-change in speedup reflects the LLC capacity of this machine.
+For `i16` mono, the file at 60 s is ≈ 5.3 MB and fits well within the LLC, giving `audio_samples_io` a 105× advantage reading at L3 bandwidth.
+The 300 s file (≈ 26 MB) also fits within the 32 MiB LLC, but its larger footprint increases cache pressure, and the speedup settles at 53×; at 600 s the 50 MB file spills to DRAM and the speedup falls to 8.6×.
+For `i32` and `f32` the LLC boundary falls between 60 s and 300 s: the 60 s file (≈ 10.6 MB) is LLC-resident (29× for both dtypes), while the 300 s file (≈ 53 MB) exceeds the LLC so the speedup drops to approximately 3× for `i32` and 2.5× for `f32`.
 
 #### Stereo (2-channel) Bulk Read
 
 <figure style="margin: 2em 0; text-align: center;">
-<img src="figures/bulk_read_throughput_2ch.png" alt="Line chart: bulk read throughput in MB/s vs signal duration for hound and audio_samples_io, stereo, warm cache" style="max-width: 100%; height: auto;">
+<a class="chart-zoom" href="/assets/images/blog/working-with-wav-files/criterion_out/bulk_read_throughput_2ch.png" target="_blank" rel="noopener"><img src="/assets/images/blog/working-with-wav-files/criterion_out/bulk_read_throughput_2ch.png" alt="Line chart: bulk read throughput in MB/s vs signal duration for hound and audio_samples_io, stereo, warm cache" style="max-width: 100%; height: auto;"></a>
 <figcaption style="font-size: 0.85em; color: #555; margin-top: 0.6em; text-align: left; max-width: 680px; margin-left: auto; margin-right: auto; line-height: 1.5;">
-<strong>Figure 3 — Bulk read throughput, stereo (warm cache).</strong> Same axes, iteration counts, and cache condition as Figure 1. Sample types: <code>i16</code>, <code>i32</code>, <code>f32</code> at 44,100 Hz; stereo (2-channel, interleaved). Shaded bands: ±1σ. Stereo results closely mirror mono; deinterleaving overhead is negligible at these file sizes.
+<strong>Figure 3 — Bulk read throughput, stereo (warm cache).</strong> Same axes, Criterion sample count, and cache condition as Figure 1. Sample types: <code>i16</code>, <code>i32</code>, <code>f32</code> at 44,100 Hz; stereo (2-channel, interleaved). Shaded bands: ±1σ. Stereo results closely mirror mono; deinterleaving overhead is negligible at these file sizes.
 </figcaption>
 </figure>
 
 <figure style="margin: 2em 0; text-align: center;">
-<img src="figures/speedup_read_2ch.png" alt="Line chart: bulk read speedup ratio (hound avg / aus avg) vs signal duration, stereo, warm cache" style="max-width: 100%; height: auto;">
+<a class="chart-zoom" href="/assets/images/blog/working-with-wav-files/criterion_out/speedup_read_2ch.png" target="_blank" rel="noopener"><img src="/assets/images/blog/working-with-wav-files/criterion_out/speedup_read_2ch.png" alt="Line chart: bulk read speedup ratio (hound avg / aus avg) vs signal duration, stereo, warm cache" style="max-width: 100%; height: auto;"></a>
 <figcaption style="font-size: 0.85em; color: #555; margin-top: 0.6em; text-align: left; max-width: 680px; margin-left: auto; margin-right: auto; line-height: 1.5;">
-<strong>Figure 4 — Bulk read speedup over <code>hound</code>, stereo (warm cache).</strong> Same axes and methodology as Figure 2. Sample types: <code>i16</code>, <code>i32</code>, <code>f32</code>; stereo (2-channel). Error bars: propagated ±1σ. Speedup profiles are essentially identical to mono (Figure 2), confirming that channel count does not affect the relative advantage at these signal lengths.
+<strong>Figure 4 — Bulk read speedup over <code>hound</code>, stereo (warm cache).</strong> Same axes and Criterion methodology as Figure 2. Sample types: <code>i16</code>, <code>i32</code>, <code>f32</code>; stereo (2-channel). Error bars: propagated ±1σ. Speedup profiles closely mirror mono (Figure 2), confirming that channel count does not affect the relative advantage at these signal lengths.
 </figcaption>
 </figure>
 
-Stereo results are almost identical to mono across every dtype and duration.
-The speedup ranges for stereo `i16` mirror those for mono (≈ 10× at 600 s; ≈ 60× at 5 s), and `i32`/`f32` stereo speedups are within 1–2× of their mono counterparts.
+Stereo results closely mirror mono across every dtype and duration.
+The speedup ranges for stereo `i16` are similar to mono (≈ 8× at 600 s; ≈ 78× at 5 s), and `i32`/`f32` stereo speedups are within a few multiples of their mono counterparts.
 The deinterleaving step required for multi-channel reads adds negligible overhead at 44,100 Hz stereo relative to the bulk read gain, so channel count neither boosts nor penalises the result at these signal lengths.
 
 #### Bulk Write
 
 <figure style="margin: 2em 0; text-align: center;">
-<img src="figures/bulk_write_throughput_1ch.png" alt="Line chart: bulk write throughput in MB/s vs signal duration for hound and audio_samples_io, mono" style="max-width: 100%; height: auto;">
+<a class="chart-zoom" href="/assets/images/blog/working-with-wav-files/criterion_out/bulk_write_throughput_1ch.png" target="_blank" rel="noopener"><img src="/assets/images/blog/working-with-wav-files/criterion_out/bulk_write_throughput_1ch.png" alt="Line chart: bulk write throughput in MB/s vs signal duration for hound and audio_samples_io, mono" style="max-width: 100%; height: auto;"></a>
 <figcaption style="font-size: 0.85em; color: #555; margin-top: 0.6em; text-align: left; max-width: 680px; margin-left: auto; margin-right: auto; line-height: 1.5;">
-<strong>Figure 5 — Bulk write throughput, mono.</strong> <em>Y-axis:</em> throughput (MB/s), computed as logical WAV file size divided by mean write time per iteration. <em>X-axis:</em> signal duration (seconds, log scale, 1–600 s). Sample types: <code>i16</code>, <code>i32</code>, <code>f32</code> at 44,100 Hz; mono (1-channel). Iteration counts: 10,000 (1–10 s), 5,000 (30–60 s), 1,000 (300–600 s); 50 warmup iterations excluded. Shaded bands: ±1σ. Write benchmarks run on ext4 (no compression); absolute MB/s figures reflect library serialisation and raw I/O time. Both libraries pass through the same filesystem path, so the speedup ratio is unaffected.
+<strong>Figure 5 — Bulk write throughput, mono.</strong> <em>Y-axis:</em> throughput (MB/s), computed as logical WAV file size divided by mean write time. <em>X-axis:</em> signal duration (seconds, log scale, 1–600 s). Sample types: <code>i16</code>, <code>i32</code>, <code>f32</code> at 44,100 Hz; mono (1-channel). 100 Criterion samples; Criterion warmup excluded. Shaded bands: ±1σ. Write benchmarks run on ext4 (no compression); absolute MB/s figures reflect library serialisation and raw I/O time.
 </figcaption>
 </figure>
 
 <figure style="margin: 2em 0; text-align: center;">
-<img src="figures/speedup_write_1ch.png" alt="Line chart: bulk write speedup ratio (hound avg / aus avg) vs signal duration, mono" style="max-width: 100%; height: auto;">
+<a class="chart-zoom" href="/assets/images/blog/working-with-wav-files/criterion_out/speedup_write_1ch.png" target="_blank" rel="noopener"><img src="/assets/images/blog/working-with-wav-files/criterion_out/speedup_write_1ch.png" alt="Line chart: bulk write speedup ratio (hound avg / aus avg) vs signal duration, mono" style="max-width: 100%; height: auto;"></a>
 <figcaption style="font-size: 0.85em; color: #555; margin-top: 0.6em; text-align: left; max-width: 680px; margin-left: auto; margin-right: auto; line-height: 1.5;">
-<strong>Figure 6 — Bulk write speedup over <code>hound</code>, mono.</strong> <em>Y-axis:</em> speedup ratio (hound avg ÷ aus avg); values above 1 indicate <code>audio_samples_io</code> is faster. <em>X-axis:</em> signal duration (seconds, log scale). Sample types: <code>i16</code>, <code>i32</code>, <code>f32</code>; mono (1-channel). Error bars: propagated ±1σ. The <code>i16</code> series compares against <code>hound</code>'s optimised <code>SampleWriter16</code> path — already <code>hound</code>'s fastest available write API for that dtype.
+<strong>Figure 6 — Bulk write speedup over <code>hound</code>, mono.</strong> <em>Y-axis:</em> speedup ratio (hound avg ÷ aus avg); values above 1 indicate <code>audio_samples_io</code> is faster. <em>X-axis:</em> signal duration (seconds, log scale). Sample types: <code>i16</code>, <code>i32</code>, <code>f32</code>; mono (1-channel). Error bars: propagated ±1σ. The <code>i16</code> series uses <code>hound</code>'s optimised <code>SampleWriter16</code> path (the fastest available write API for that dtype) for both bulk and streamed writes.
 </figcaption>
 </figure>
 
-`audio_samples_io` is consistently faster across all dtypes and durations tested.
-For `i16` the margin is small (≈ 1.1× at 60 s), but for `i32` and `f32` it is substantially larger: approximately 3× for `i32` and 2.4× for `f32` at 60 s.
-The table below shows this at 60 s, where variance is low enough to make the comparison meaningful.
+`audio_samples_io` is consistently faster across all dtypes.
+At short durations the margins are modest: for `i16` the advantage at 10 s is negligible (≈ 1.05×), while for `i32` and `f32` it is more meaningful at approximately 2.5× and 2.1× respectively.
+At longer durations the advantage grows substantially, reaching 82× for `i16`, 134× for `i32`, and 110× for `f32` at 600 s.
 
-**60 s · mono · write** (5,000 iterations)
+**10 s · mono · write** (100 Criterion samples)
 
-| Benchmark | avg (ms) | σ (ms) | p50 (ms) | p90 (ms) | p99 (ms) |
-|:----------|--------:|-------:|--------:|--------:|--------:|
-| `hound` · `i16` | 3.603 | 0.575 | 3.393 | 4.482 | 5.492 |
-| `aus` · `i16` | 3.374 | 0.520 | 3.202 | 3.974 | 5.200 |
-| | | | | | |
-| `hound` · `i32` | 19.263 | 2.413 | 18.662 | 20.472 | 30.074 |
-| `aus` · `i32` | 6.313 | 0.808 | 6.077 | 7.086 | 9.389 |
-| | | | | | |
-| `hound` · `f32` | 15.940 | 1.662 | 15.558 | 17.308 | 21.527 |
-| `aus` · `f32` | 6.648 | 0.795 | 6.357 | 7.575 | 9.464 |
+| Benchmark | avg (ms) | cv |
+|:----------|--------:|---:|
+| `hound` · `i16` | 0.672 | 0.051 |
+| `aus` · `i16` | 0.640 | 0.048 |
+| | | |
+| `hound` · `i32` | 2.883 | 0.047 |
+| `aus` · `i32` | 1.149 | 0.071 |
+| | | |
+| `hound` · `f32` | 2.399 | 0.026 |
+| `aus` · `f32` | 1.137 | 0.066 |
 
-Write variance is higher than read variance.
-CV values at 60 s are in the 10–16% range for both libraries; p99 is 1.5–1.6× the mean, with no multi-second tail events.
-At 600 s, p99 climbs to 40–210 ms for both libraries (from a mean of 29–175 ms), reflecting occasional OS scheduling pressure, but no ⚠ rows appear in the raw results (`results/bulk_600s.csv`).
+Write CV values at 10 s are in the 3–7% range for both libraries.
 
 #### Streamed Read
 
 <figure style="margin: 2em 0; text-align: center;">
-<img src="figures/streamed_read_throughput_60s_1ch.png" alt="Line chart: streamed read throughput in MB/s vs chunk size for hound and audio_samples_io, 60 s signal, mono, warm cache" style="max-width: 100%; height: auto;">
+<a class="chart-zoom" href="/assets/images/blog/working-with-wav-files/criterion_out/streamed_read_throughput_60s_1ch.png" target="_blank" rel="noopener"><img src="/assets/images/blog/working-with-wav-files/criterion_out/streamed_read_throughput_60s_1ch.png" alt="Line chart: streamed read throughput in MB/s vs chunk size for hound and audio_samples_io, 60 s signal, mono, warm cache" style="max-width: 100%; height: auto;"></a>
 <figcaption style="font-size: 0.85em; color: #555; margin-top: 0.6em; text-align: left; max-width: 680px; margin-left: auto; margin-right: auto; line-height: 1.5;">
-<strong>Figure 7 — Streamed read throughput, 60 s, mono (warm cache).</strong> <em>Y-axis:</em> throughput (MB/s), averaged over the full 60 s stream per iteration. <em>X-axis:</em> chunk size in samples (512, 1,024, 4,096, 8,192, 16,384). Fixed signal duration: 60 s at 44,100 Hz; mono (1-channel). Sample types: <code>i16</code>, <code>i32</code>, <code>f32</code>. Iteration count: 5,000; 50 warmup iterations excluded. Shaded bands: ±1σ. Cache condition: warm. Both libraries use allocation-free chunk patterns; neither allocates inside the hot loop.
+<strong>Figure 7 — Streamed read throughput, 60 s, mono (warm cache).</strong> <em>Y-axis:</em> throughput (MB/s), averaged over the full 60 s stream per Criterion sample. <em>X-axis:</em> chunk size in samples (512, 1,024, 4,096, 8,192, 16,384). Fixed signal duration: 60 s at 44,100 Hz; mono (1-channel). Sample types: <code>i16</code>, <code>i32</code>, <code>f32</code>. 100 Criterion samples; Criterion warmup excluded. Shaded bands: ±1σ. Cache condition: warm. Both libraries use allocation-free chunk patterns; neither allocates inside the hot loop.
 </figcaption>
 </figure>
 
 <figure style="margin: 2em 0; text-align: center;">
-<img src="figures/speedup_streamed_read_60s_1ch.png" alt="Line chart: streamed read speedup ratio (hound avg / aus avg) vs chunk size, 60 s signal, mono, warm cache" style="max-width: 100%; height: auto;">
+<a class="chart-zoom" href="/assets/images/blog/working-with-wav-files/criterion_out/speedup_streamed_read_60s_1ch.png" target="_blank" rel="noopener"><img src="/assets/images/blog/working-with-wav-files/criterion_out/speedup_streamed_read_60s_1ch.png" alt="Line chart: streamed read speedup ratio (hound avg / aus avg) vs chunk size, 60 s signal, mono, warm cache" style="max-width: 100%; height: auto;"></a>
 <figcaption style="font-size: 0.85em; color: #555; margin-top: 0.6em; text-align: left; max-width: 680px; margin-left: auto; margin-right: auto; line-height: 1.5;">
-<strong>Figure 8 — Streamed read speedup over <code>hound</code>, 60 s, mono (warm cache).</strong> <em>Y-axis:</em> speedup ratio (hound avg ÷ aus avg); values above 1 indicate <code>audio_samples_io</code> is faster. <em>X-axis:</em> chunk size in samples (512–16,384). Fixed duration: 60 s; mono (1-channel). Sample types: <code>i16</code>, <code>i32</code>, <code>f32</code>. Iteration count: 5,000. Error bars: propagated ±1σ. <code>hound</code>'s streamed-read time is flat across chunk sizes because its iterator advances one sample at a time regardless of how the caller groups reads.
+<strong>Figure 8 — Streamed read speedup over <code>hound</code>, 60 s, mono (warm cache).</strong> <em>Y-axis:</em> speedup ratio (hound avg ÷ aus avg); values above 1 indicate <code>audio_samples_io</code> is faster. <em>X-axis:</em> chunk size in samples (512–16,384). Fixed duration: 60 s; mono (1-channel). Sample types: <code>i16</code>, <code>i32</code>, <code>f32</code>. 100 Criterion samples. Error bars: propagated ±1σ. <code>hound</code>'s streamed-read time is flat across chunk sizes because its iterator advances one sample at a time regardless of how the caller groups reads.
 </figcaption>
 </figure>
 
 The read advantage for `audio_samples_io` carries over to the streamed path and is stable across all chunk sizes.
-At 60 s with a 4096-sample chunk: 43× for `i16`, 19× for `i32`, 11× for `f32`.
+At 60 s with a 4,096-sample chunk: 35× for `i16`, 14× for `i32`, 10× for `f32`.
 At 600 s (table below) the speedups are lower due to the LLC spill effect described above.
-Within each duration, larger chunk sizes (4 K–16 K) tend to favour `audio_samples_io` slightly more than smaller ones.
+Within each duration, larger chunk sizes (8 K–16 K) tend to favour `audio_samples_io` slightly more than smaller ones.
 `hound`'s streamed-read time is essentially flat across chunk sizes at a given duration, as expected: the iterator advances one sample at a time regardless of how the caller groups the results.
 Standard deviation for `audio_samples_io` remains tight across the board; `hound`'s deviation is proportionally lower here than in bulk mode, but its absolute times are still much higher.
 
-The table below shows absolute timings at 600 s with a 4096-sample chunk.
+The table below shows absolute timings at 600 s with a 4,096-sample chunk.
 
-**600 s · mono · streamed read · chunk 4096** (1,000 iterations)
+**600 s · mono · streamed read · chunk 4,096** (100 Criterion samples)
 
-| Benchmark | avg (ms) | σ (ms) | p50 (ms) | p90 (ms) | p99 (ms) |
-|:----------|--------:|-------:|--------:|--------:|--------:|
-| `hound` · `i16` | 309.334 | 10.001 | 307.148 | 324.046 | 339.445 |
-| `aus` · `i16` | 10.313 | 1.035 | 9.935 | 12.264 | 12.996 |
-| | | | | | |
-| `hound` · `i32` | 197.424 | 16.299 | 192.188 | 218.779 | 257.232 |
-| `aus` · `i32` | 12.879 | 1.016 | 12.554 | 13.783 | 17.099 |
-| | | | | | |
-| `hound` · `f32` | 129.905 | 16.972 | 124.444 | 150.917 | 196.076 |
-| `aus` · `f32` | 13.475 | 1.077 | 13.063 | 14.961 | 17.719 |
+| Benchmark | avg (ms) | cv |
+|:----------|--------:|---:|
+| `hound` · `i16` | 252.510 | 0.018 |
+| `aus` · `i16` | 9.117 | 0.020 |
+| | | |
+| `hound` · `i32` | 148.928 | 0.045 |
+| `aus` · `i32` | 14.084 | 0.025 |
+| | | |
+| `hound` · `f32` | 105.098 | 0.038 |
+| `aus` · `f32` | 13.356 | 0.023 |
 
-Speedups here are 30× for `i16`, 15× for `i32`, and 9.6× for `f32`.
+Speedups here are 28× for `i16`, 11× for `i32`, and 7.9× for `f32`.
 
 `hound · i32` reads measurably slower than `hound · f32` despite identical on-disk byte counts.
 The cause is in hound's `Sample::read()` dispatch: the `i32` implementation matches against six arms (`(1,8)`, `(2,16)`, `(3,24)`, `(4,24)`, `(4,32)`, and a wildcard) before reaching the 32-bit integer case, while the `f32` implementation reaches its only relevant arm `(4,32)` immediately.
-Over 26.5 million samples in a 600 s file, this extra per-sample branch evaluation compounds to approximately 67 ms on this machine.
+Over 26.5 million samples in a 600 s file, this extra per-sample branch evaluation is consistent with the ≈ 44 ms gap between `hound · i32` (148.9 ms) and `hound · f32` (105.1 ms) in the streamed read results; profiling with `perf` would be needed to confirm the exact source of the difference.
 
 #### Streamed Write
 
 <figure style="margin: 2em 0; text-align: center;">
-<img src="figures/speedup_streamed_write_60s_1ch.png" alt="Line chart: streamed write speedup ratio (hound avg / aus avg) vs chunk size, 60 s signal, mono" style="max-width: 100%; height: auto;">
+<a class="chart-zoom" href="/assets/images/blog/working-with-wav-files/criterion_out/speedup_streamed_write_60s_1ch.png" target="_blank" rel="noopener"><img src="/assets/images/blog/working-with-wav-files/criterion_out/speedup_streamed_write_60s_1ch.png" alt="Line chart: streamed write speedup ratio (hound avg / aus avg) vs chunk size, 60 s signal, mono" style="max-width: 100%; height: auto;"></a>
 <figcaption style="font-size: 0.85em; color: #555; margin-top: 0.6em; text-align: left; max-width: 680px; margin-left: auto; margin-right: auto; line-height: 1.5;">
-<strong>Figure 9 — Streamed write speedup over <code>hound</code>, 60 s, mono.</strong> <em>Y-axis:</em> speedup ratio (hound avg ÷ aus avg); values above 1 indicate <code>audio_samples_io</code> is faster; linear scale. <em>X-axis:</em> chunk size in samples (512, 1,024, 4,096, 8,192, 16,384). Fixed duration: 60 s at 44,100 Hz; mono (1-channel). Sample types: <code>i16</code>, <code>i32</code>, <code>f32</code>. Iteration count: 5,000; 50 warmup iterations excluded. Error bars: propagated ±1σ. Write benchmarks run on ext4 (no compression); both libraries are affected equally so the speedup ratio is unaffected by the filesystem setting.
+<strong>Figure 9 — Streamed write speedup over <code>hound</code>, 60 s, mono.</strong> <em>Y-axis:</em> speedup ratio (hound avg ÷ aus avg); values above 1 indicate <code>audio_samples_io</code> is faster; linear scale. <em>X-axis:</em> chunk size in samples (512, 1,024, 4,096, 8,192, 16,384). Fixed duration: 60 s at 44,100 Hz; mono (1-channel). Sample types: <code>i16</code>, <code>i32</code>, <code>f32</code>. 100 Criterion samples; Criterion warmup excluded. Error bars: propagated ±1σ. Write benchmarks run on ext4 (no compression). The <code>i16</code> series uses <code>hound</code>'s <code>get_i16_writer</code> path (the optimised <code>SampleWriter16</code> bulk-flush API) for every chunk.
 </figcaption>
 </figure>
 
-Streamed write is the most variable condition of the four.
-At the smallest chunk size (512 samples), both libraries are within a few percent of each other across all durations and dtypes, and in several cases `hound` is marginally ahead.
-As chunk size increases the gap widens in favour of `audio_samples_io`; the speedup figure above shows this progression across all chunk sizes at 60 s (speedups of 6×, 4.9×, and 4.2× for `i16`, `i32`, and `f32` respectively at 4096 samples).
-The 600 s results show moderate variance (CV 7–11%).
-For short durations (1 s, 5 s), results are noisier in general and show less consistent ordering.
+Streamed write shows a clear chunk-size dependence for `i32` and `f32`, and a more complex pattern for `i16`.
+At small chunk sizes (512 samples), `audio_samples_io` is slower than `hound` for `i16` (≈ 0.77× at 60 s), roughly equal for `f32`, and only modestly faster for `i32` (≈ 1.15×).
+The advantage emerges clearly at larger chunks: at 4,096 samples `audio_samples_io` is approximately 1.83× faster for `i16`, 2.03× for `i32`, and 1.77× for `f32`.
+For short durations (1 s, 5 s), results are noisier in general due to OS scheduling and file-open overhead, but the qualitative ordering is unchanged at medium and large chunk sizes.
 
-The table below shows the raw timing at 600 s with a 4096-sample chunk.
+The table below shows the raw timing at 600 s with a 4,096-sample chunk.
 
-**600 s · mono · streamed write · chunk 4096** (1,000 iterations)
+**600 s · mono · streamed write · chunk 4,096** (100 Criterion samples)
 
-| Benchmark | avg (ms) | σ (ms) | p50 (ms) | p90 (ms) | p99 (ms) |
-|:----------|--------:|-------:|--------:|--------:|--------:|
-| `hound` · `i16` | 303.039 | 32.451 | 291.732 | 344.967 | 431.922 |
-| `aus` · `i16` | 44.815 | 4.613 | 43.575 | 51.656 | 61.114 |
-| | | | | | |
-| `hound` · `i32` | 406.957 | 32.078 | 398.165 | 445.534 | 524.178 |
-| `aus` · `i32` | 75.110 | 7.064 | 73.529 | 85.605 | 94.275 |
-| | | | | | |
-| `hound` · `f32` | 346.299 | 25.743 | 338.368 | 379.322 | 440.017 |
-| `aus` · `f32` | 70.463 | 6.007 | 69.151 | 78.059 | 90.013 |
+| Benchmark | avg (ms) | cv |
+|:----------|--------:|---:|
+| `hound` · `i16` | 72.411 | 0.143 |
+| `aus` · `i16` | 39.315 | 0.040 |
+| | | |
+| `hound` · `i32` | 147.681 | 0.042 |
+| `aus` · `i32` | 70.441 | 0.048 |
+| | | |
+| `hound` · `f32` | 128.090 | 0.090 |
+| `aus` · `f32` | 72.157 | 0.056 |
 
-Speedups at this chunk size are 6.8× (`i16`), 5.4× (`i32`), and 4.9× (`f32`).
-No ⚠ rows appear; all CV values are under 0.15, and p99 is within 2× the mean.
+Speedups at this chunk size are 1.84× (`i16`), 2.10× (`i32`), and 1.78× (`f32`).
+CV values are 4–14%.
 
 #### Cold-cache Bulk Read
 
 <figure style="margin: 2em 0; text-align: center;">
-<img src="figures/bulk_read_throughput_1ch_cold.png" alt="Line chart: bulk read throughput in MB/s vs signal duration for hound, audio_samples_io, and mmap baseline, mono, approximately cold cache" style="max-width: 100%; height: auto;">
+<a class="chart-zoom" href="/assets/images/blog/working-with-wav-files/criterion_out/bulk_read_throughput_1ch_cold.png" target="_blank" rel="noopener"><img src="/assets/images/blog/working-with-wav-files/criterion_out/bulk_read_throughput_1ch_cold.png" alt="Line chart: bulk read throughput in MB/s vs signal duration for hound and audio_samples_io, mono, approximately cold cache" style="max-width: 100%; height: auto;"></a>
 <figcaption style="font-size: 0.85em; color: #555; margin-top: 0.6em; text-align: left; max-width: 680px; margin-left: auto; margin-right: auto; line-height: 1.5;">
-<strong>Figure 10 — Bulk read throughput, mono (approximately cold cache).</strong> <em>Y-axis:</em> throughput (MB/s), computed as logical WAV file size divided by mean read time per iteration. <em>X-axis:</em> signal duration (seconds, log scale). Implementations: <code>hound</code>, <code>audio_samples_io</code>, and a raw <code>mmap</code> baseline (sequential read-ahead hint). Sample types: <code>i16</code>, <code>i32</code>, <code>f32</code>; mono (1-channel). <strong>Iteration count: 30</strong>. Cache eviction: <code>POSIX_FADV_DONTNEED</code> called before each iteration (advisory; eviction not independently verified). Results should be treated as approximately storage-bound rather than guaranteed cold. Error bars: ±1σ.
+<strong>Figure 10 — Bulk read throughput, mono (approximately cold cache).</strong> <em>Y-axis:</em> throughput (MB/s), computed as logical WAV file size divided by mean read time per iteration. <em>X-axis:</em> signal duration (seconds, log scale). Implementations: <code>hound</code>, <code>audio_samples_io</code>. Sample types: <code>i16</code>, <code>i32</code>, <code>f32</code>; mono (1-channel). 100 Criterion samples. Cache eviction: <code>POSIX_FADV_DONTNEED</code> called before each iteration (advisory; eviction not independently verified). Results should be treated as approximately storage-bound rather than guaranteed cold. Error bars: ±1σ.
 </figcaption>
 </figure>
 
 To characterise storage-bound performance, bulk read benchmarks were repeated with `posix_fadvise(POSIX_FADV_DONTNEED)` called before each measured iteration to advise the kernel to evict the file from the page cache.
 `POSIX_FADV_DONTNEED` is advisory: the kernel may ignore it, and eviction was not independently verified (e.g. via `vmtouch`); results should be treated as approximately storage-bound rather than guaranteed cold.
+Unlike in earlier iterations of this benchmark which used a smaller fixed iteration count, the cold-cache run collects the same 100 Criterion samples as all other conditions; `POSIX_FADV_DONTNEED` is issued inside `iter_custom` before each individual timed iteration.
 The storage device here appears to be significantly faster than typical SATA storage, and `hound`'s per-sample CPU overhead is still clearly visible as a bottleneck even under cold-read conditions.
 
-**600 s · mono · cold-cache read** (30 iterations)
+**600 s · mono · cold-cache read** (100 Criterion samples)
 
-| Benchmark | avg (ms) | σ (ms) | p50 (ms) |
-|:----------|--------:|-------:|--------:|
-| `hound` · `i16` | 314.222 | 6.187 | 312.140 |
-| `aus` · `i16` | 60.786 | 3.769 | 60.504 |
-| `mmap` · `i16` | 50.430 | 3.792 | 49.780 |
-| | | | |
-| `hound` · `i32` | 280.091 | 14.192 | 275.427 |
-| `aus` · `i32` | 125.025 | 14.016 | 121.075 |
-| `mmap` · `i32` | 98.319 | 9.555 | 96.485 |
-| | | | |
-| `hound` · `f32` | 457.221 | 8.162 | 455.917 |
-| `aus` · `f32` | 127.315 | 6.608 | 125.241 |
-| `mmap` · `f32` | 103.243 | 12.192 | 99.447 |
+| Benchmark | avg (ms) | cv |
+|:----------|--------:|---:|
+| `hound` · `i16` | 280.171 | 0.016 |
+| `aus` · `i16` | 62.241 | 0.058 |
+| | | |
+| `hound` · `i32` | 234.104 | 0.033 |
+| `aus` · `i32` | 124.946 | 0.039 |
+| | | |
+| `hound` · `f32` | 407.846 | 0.015 |
+| `aus` · `f32` | 122.585 | 0.023 |
 
-Even cold, the three implementations do **not** converge for any dtype at 600 s.
-For `i32` and `f32`, `audio_samples_io` (125–127 ms) is ≈ 1.25× slower than mmap (98–103 ms), while `hound` (280–457 ms) is 2.2–3.6× slower than `audio_samples_io`.
-The storage device is fast enough that `hound`'s per-sample CPU loop remains the binding constraint even in cold-read conditions — storage bandwidth is no longer the equaliser.
+Even cold, the two implementations do **not** converge for any dtype at 600 s.
+`audio_samples_io` is 4.5× faster than `hound` for `i16`, 1.9× for `i32`, and 3.3× for `f32`.
+The storage device is fast enough that `hound`'s per-sample CPU loop remains the binding constraint even in cold-read conditions: storage bandwidth is no longer the equaliser.
 
-`i16` continues to show the largest `hound` disadvantage: 314 ms for `hound` vs 60.8 ms for `audio_samples_io` (5.2×), with `audio_samples_io` tracking closely behind mmap (50.4 ms).
+`i16` continues to show the largest `hound` disadvantage: 280 ms for `hound` vs 62.2 ms for `audio_samples_io` (4.5×).
 The structural reason is unchanged from the warm-cache case: `hound`'s per-sample loop cannot keep up with the storage interface's delivery rate for the narrow `i16` type.
 
 At short durations (1–5 s), both libraries are operating in the low-millisecond range where file-open latency and OS scheduling noise dominate, and results are noisier for all dtypes.
@@ -631,15 +702,14 @@ Even with `BufReader` absorbing the underlying syscall overhead, every sample st
 Over a 600 s `i16` file (approximately 26.5 million samples), this amounts to 26.5 million iterations of that stack.
 
 `audio_samples_io`'s non-streaming path takes a fundamentally different approach.
-The entire file is loaded into memory via `BufReader::read_to_end()` or memory-mapped with a sequential read-ahead hint (`wav_file.rs`, lines 324–339, `audio_samples_io` v0.3.0).
-For aligned data, samples are then made available via an unsafe `core::slice::from_raw_parts` reinterpretation of the raw byte slice (`data.rs`, lines 85–87, `audio_samples_io` v0.3.0): no copy, no per-sample conversion, just a type-level assertion that the bytes are already in the right format.
-When the in-file type matches the requested output type (`S == T`), an additional `unsafe mem::transmute` skips even the `Vec` conversion step (`wav_file.rs`, line 203, `audio_samples_io` v0.3.0).
-In the common case the entire "decode" step reduces to a single pointer cast followed by a bounds check.
+The entire file is loaded into memory via `BufReader::read_to_end()` or memory-mapped with a sequential read-ahead hint ([`wav_file.rs`, lines 324–339, `audio_samples_io` v0.3.1](https://github.com/jmg049/audio_samples_io/blob/v0.3.1/src/wav_file.rs#L324-L339)).
+For aligned data, samples are then made available via an unsafe `core::slice::from_raw_parts` reinterpretation of the raw byte slice ([`data.rs`, lines 85–87, `audio_samples_io` v0.3.1](https://github.com/jmg049/audio_samples_io/blob/v0.3.1/src/data.rs#L85-L87)): no copy, no per-sample conversion, just a type-level assertion that the bytes are already in the right format.
+When the in-file type matches the requested output type (`S == T`), an additional `unsafe mem::transmute` skips even the `Vec` conversion step ([`wav_file.rs`, line 203, `audio_samples_io` v0.3.1](https://github.com/jmg049/audio_samples_io/blob/v0.3.1/src/wav_file.rs#L203)).
+In the common case the entire 'decode' step reduces to a single pointer cast followed by a bounds check.
 
 The streaming path retains most of this advantage.
-`audio_samples_io`'s `read_frames_into` issues a single `read()` call for all bytes of the requested chunk (`streaming.rs`, line 467, `audio_samples_io` v0.3.0), writes them into a reused internal `Vec<u8>` buffer, and then converts in bulk using `chunks_exact(2).map(...)` or `chunks_exact(4).map(...)`: one pass through the byte slice at the cost of a single iterator chain.
+`audio_samples_io`'s `read_frames_into` issues a single `read()` call for all bytes of the requested chunk ([`streaming.rs`, line 467, `audio_samples_io` v0.3.1](https://github.com/jmg049/audio_samples_io/blob/v0.3.1/src/streaming.rs#L467)), writes them into a reused internal `Vec<u8>` buffer, and then converts in bulk using `chunks_exact(2).map(...)` or `chunks_exact(4).map(...)`: one pass through the byte slice at the cost of a single iterator chain.
 `hound`'s streamed path is identical to its bulk path from an internal standpoint: the same per-sample iterator, called the same number of times regardless of what chunk size the caller imposes.
-
 
 #### Why writes diverge for i32 and f32
 
@@ -647,61 +717,58 @@ Both libraries ultimately write through a `BufWriter`, and the `BufWriter` coale
 `hound`'s `write_sample()` dispatches through `Sample::write_padded()` on every call ([`write.rs` L429–437, hound v3.5.1](https://github.com/ruuda/hound/blob/v3.5.1/src/write.rs#L429-L437)), but each call writes only a small number of bytes to the internal write buffer; the kernel only sees the batched flushes.
 `audio_samples_io` serialises a whole `AudioSamples` chunk in one pass and writes it with a single `write_all()`.
 The difference is the number of function-call layers per byte written, not the number of syscalls.
-On a faster storage path — where flush latency is lower and the CPU-side serialisation dominates a larger fraction of total time — this difference becomes more visible.
-The 3× advantage for `i32` and 2.4× for `f32` at 60 s reflects exactly this: the server's storage can drain the `BufWriter` quickly enough that the per-sample dispatch in `hound` becomes the bottleneck, while `audio_samples_io`'s bulk `write_all` amortises that cost.
+The 2.5× advantage for `i32` and 2.1× for `f32` at 10 s reflects exactly this: the server's storage can drain the `BufWriter` quickly enough that the per-sample dispatch in `hound` becomes the bottleneck, while `audio_samples_io`'s bulk `write_all` amortises that cost.
 
-For `i16`, `hound`'s benchmark uses `get_i16_writer` (the `SampleWriter16` path), which pre-allocates an internal buffer and flushes with a single `write_all()`, closely mirroring what `audio_samples_io` does.
-For `i32` and `f32`, `hound` has no equivalent optimised writer, so those types use `write_sample` per sample.
-The `i16` write results therefore compare each library's best available path (≈ parity at 60 s); the `i32`/`f32` results compare `audio_samples_io`'s bulk serialisation against `hound`'s only available path for those types (3× and 2.4× respectively).
+The criterion benchmark uses `hound`'s `get_i16_writer` (`SampleWriter16`) path for **all** `i16` writes, both bulk and streamed, which pre-allocates an internal buffer and flushes with a single `write_all()`, closely mirroring what `audio_samples_io` does.
+For `i32` and `f32`, `hound` has no equivalent optimised writer, so those types always use `write_sample` per sample.
+The `i16` write results therefore compare each library's best available path (≈ 1.05× at 10 s); the `i32`/`f32` results compare `audio_samples_io`'s bulk serialisation against `hound`'s only available path for those types (2.5× and 2.1× respectively).
 
 #### Predictability as an independent result
 
-Beyond mean latency, the σ and percentile data carry their own information.
-`audio_samples_io`'s read times have standard deviations consistently much smaller than `hound`'s at short and medium durations (e.g. 76× smaller at 60 s for `i16`); at 600 s, where both implementations are DRAM-bound, the ratio narrows to ≈ 9×.
+Beyond mean latency, the cv values carry their own information.
+`audio_samples_io`'s read times have standard deviations consistently much smaller than `hound`'s at short and medium durations (e.g. ≈ 78× smaller at 60 s for `i16`, where `hound`'s σ is 0.468 ms vs `audio_samples_io`'s 0.006 ms, derived from avg × cv); at 600 s, where both implementations are DRAM-bound, the ratio narrows to ≈ 4×.
 This follows from the implementation: a path that performs one bulk read and one pointer cast has far fewer opportunities to accumulate scheduling jitter than one that iterates millions of times.
-`hound`'s p99 values climb above the mean at longer durations (e.g. 15.5 ms p99 vs 14.0 ms mean for `i16` at 30 s), which reflects the probabilistic accumulation of interrupt-induced pauses over a long iteration loop.
+`hound`'s cv climbs at longer durations (e.g. cv 0.103 for `i32` at 30 s vs 0.050 for `audio_samples_io`), reflecting the probabilistic accumulation of interrupt-induced pauses over a long per-sample iteration loop.
 
-In latency-sensitive applications (real-time transcription, live DSP, audio pipeline inference), worst-case latency is often the binding constraint rather than average throughput. In audio, "real-time" typically means completing processing within a fixed buffer period — for example, a 1,024-sample buffer at 44,100 Hz gives approximately 23 ms per callback, and a 256-sample buffer gives 5.8 ms. Under any such budget, the p99 is the relevant figure, not the mean; `audio_samples_io`'s tighter tail distribution means it is consistently closer to the available headroom, regardless of which buffer size defines the constraint.
-A library whose p99 is 1.5× its p50 is easier to reason about under real-time deadlines than one whose tail is less bounded.
+In latency-sensitive applications (real-time transcription, live DSP, audio pipeline inference), tail latency is often the binding constraint rather than average throughput. In audio, 'real-time' typically means completing processing within a fixed buffer period: for example, a 1,024-sample buffer at 44,100 Hz gives approximately 23 ms per callback, and a 256-sample buffer gives 5.8 ms. `audio_samples_io`'s consistently lower cv means its worst-case times stay closer to its average, making it easier to reason about under real-time deadlines regardless of which buffer size defines the constraint.
 
 #### Streamed write chunk size as an ablation of call overhead
 
-The chunk-size sweep in the streamed write condition is effectively an ablation of `write_frames` per-call cost.
-At 512 samples, `write_frames` is called thousands of times per file: at 44,100 Hz, a 600 s file requires roughly 51,600 calls at this chunk size.
-The per-call cost of each `write_frames` invocation (serialisation pass plus a `write_all`) is then comparable in aggregate to `hound`'s per-sample calls, and the two libraries converge.
-At 16,384 samples per chunk, the call count drops to around 1,600 for the same file.
-Each `write_frames` call now amortises its fixed overhead over 32× more data, while `hound`'s per-sample count is unchanged.
-The monotone relationship between chunk size and speedup ratio, visible across all durations and dtypes, is consistent with this model.
+The chunk-size sweep in the streamed write condition reveals an asymmetric picture across dtypes.
+For `i32` and `f32`, `audio_samples_io` is faster at every chunk size tested and the advantage grows monotonically with chunk size, consistent with amortising the fixed per-call overhead of `write_frames` over more data.
+For `i16`, the picture is more nuanced: at 512 samples `audio_samples_io` is slower (≈ 0.77× at 60 s), approximately parity at 1,024 samples, and faster from 4,096 samples upward (≈ 1.83× at 60 s).
+This inversion at small chunk sizes reflects the interaction between `audio_samples_io`'s per-call overhead and `hound`'s `SampleWriter16` optimised path, which is particularly efficient for `i16` at small write granularity.
 
-The implication for practitioners is that `audio_samples_io`'s write advantage is not fixed: it grows with processing block size, and applications already operating on large audio buffers will benefit more.
+The implication for practitioners is that `audio_samples_io`'s write advantage is not fixed: it grows with processing block size for `i32` and `f32`, and for `i16` requires at least a 4,096-sample chunk to materialise. Applications already operating on large audio buffers will benefit most.
 
 #### The small-signal noise floor
 
 Results at 1 s and 5 s durations, particularly for streamed writes, exhibit qualitatively different behaviour from longer durations.
 Mean times fall in the sub-millisecond to low-millisecond range, where the resolution of `std::time::Instant` on Linux, OS scheduling quanta, and file-open/close overhead each constitute a non-negligible fraction of the measured interval.
-Several 1 s streamed write configurations show σ values of 50–200% of the mean, and the p99 is occasionally an order of magnitude above the p50.
+Several 1 s streamed write configurations show cv values of 0.5–2.0, and individual iterations can be an order of magnitude above the mean.
 At these scales the benchmark is as much a measurement of OS scheduler behaviour as of library throughput.
 The results demonstrate that both libraries can handle short files quickly, but any ranking at this granularity would require pinned CPU affinity, disabled frequency scaling, and clock sources with sub-microsecond resolution to be reliable.
 
 #### Limitations
 
 **Single machine, single filesystem.** All measurements were taken on the server described in the Test Environment section.
-Because 50 warmup iterations precede measurement, read benchmarks reflect page-cache-warm performance at short and medium durations, and are DRAM-bandwidth-bound at long durations where the file exceeds the LLC.
+Because Criterion's warmup phase precedes measurement, read benchmarks reflect page-cache-warm performance at short and medium durations, and are DRAM-bandwidth-bound at long durations where the file exceeds the LLC.
 Write results should be interpreted in light of the server's filesystem and storage configuration (ext4, `rw,relatime`, QEMU virtual disk; see Test Environment); absolute write times will differ on different filesystems or compression settings, though the relative ordering between libraries should be more stable.
 Whether the relative ordering between libraries changes on spinning disk or network-attached storage is not tested here.
 
-**Page-cache warmth and LLC effects.** The 50-iteration warmup brings file-sized working sets into the page cache before measurement begins.
-For files smaller than the server's LLC, further iterations warm the LLC itself, and `audio_samples_io`'s throughput at those sizes reflects L3 bandwidth rather than DRAM bandwidth.
-The headline speedup figures (up to 154× for `i16`) should therefore be understood as LLC-warm figures for appropriately-sized files.
-For files larger than the LLC, performance is DRAM-bound and speedup figures are lower (11× for `i16` at 600 s, 4–7× for `i32`/`f32`).
+**Page-cache warmth and LLC effects.** Criterion's warmup phase brings file-sized working sets into the page cache before measurement begins.
+For files smaller than the server's LLC, warmup also brings the working set into the LLC itself, and `audio_samples_io`'s throughput at those sizes reflects L3 bandwidth rather than DRAM bandwidth.
+The headline speedup figures (up to 105×) should therefore be understood as LLC-warm figures for appropriately-sized files.
+For files larger than the LLC, performance is DRAM-bound and speedup figures are lower (8.6× for `i16` at 600 s, ≈ 3× for `i32`, ≈ 2.5× for `f32`).
 The cold-cache benchmarks measure the storage-bound case directly; on this server, storage is fast enough that `hound`'s CPU bottleneck remains the dominant constraint even cold, so the convergence to near-parity observed on slower SATA storage does not occur here.
 
 **Mono and stereo, but not surround.** Both mono (1-channel) and stereo (2-channel) signals were benchmarked.
 Speedup profiles are essentially identical across the two channel counts, suggesting `audio_samples_io`'s SIMD deinterleaving path adds negligible overhead at these file sizes.
 Whether the same holds for surround formats (5.1, 7.1), where the interleave stride is larger, remains untested.
 
-**Reduced iteration counts at long durations.** Iteration counts were scaled to keep total benchmark time tractable: 1,000 iterations at 300–600 s.
-The 600 s write results (CV 7–11%, p99 within 2× mean) are based on a relatively small number of observations and should be treated as indicative; a dedicated long-duration write experiment with tighter OS noise control would be needed to draw strong conclusions at that scale.
+**Fixed sample count across all durations.** Criterion collects 100 samples per benchmark regardless of signal duration.
+Short benchmarks accumulate more inner iterations per sample (Criterion scales automatically), while long benchmarks may achieve only one iteration per sample.
+The 600 s streamed write results (CV 4–14%) are based on fewer total timed iterations than shorter durations and should be treated as indicative; a dedicated long-duration write experiment with tighter OS noise control would be needed to draw strong conclusions at that scale.
 
 **`hound`'s write path varies by dtype.** For `i16`, the benchmark uses `hound`'s `SampleWriter16` path (`get_i16_writer`), which pre-allocates an internal buffer and flushes with a single `write_all` (hound's most efficient write API).
 For `i32` and `f32`, no equivalent optimised writer exists in `hound`, so those dtypes use the standard `write_sample` per-sample path.
@@ -709,26 +776,24 @@ The `i16` write comparison is therefore already between each library's best avai
 
 #### Contextualising the read numbers
 
-The warm-cache read speedup (4–154× depending on dtype, duration, and LLC fit) is a real measurement, but it measures specific scenarios: either the file fits in the LLC (very high speedup) or the file is larger than the LLC but still DRAM-resident (moderate speedup).
-Both are relevant for repeated-access workloads — multi-epoch training loops, hot file caches, or any pipeline that reads the same files many times.
-For those workloads the advantage is large and architecturally significant: 10,000 ten-second `i16` files read from a warm cache take roughly 46 seconds with `hound` and under 0.6 seconds with `audio_samples_io` at the 86× speedup measured at 10 s.
+The warm-cache read speedup (2.5–105× depending on dtype, duration, and LLC fit) is a real measurement, but it measures specific scenarios: either the file fits in the LLC (high speedup) or the file is larger than the LLC but still DRAM-resident (moderate speedup).
+Both are relevant for repeated-access workloads: multi-epoch training loops, hot file caches, or any pipeline that reads the same files many times.
+For those workloads the advantage is large and architecturally significant: 10,000 ten-second `i16` files read from a warm cache take roughly 41 seconds with `hound` and about 1.1 seconds with `audio_samples_io` at the 36× speedup measured at 10 s.
 
 For workloads that read each file once from a large dataset, the cold-cache numbers are the honest baseline.
-On this server, storage is fast enough that `hound`'s per-sample CPU loop is the bottleneck even cold: `audio_samples_io` is 2.2–5.2× faster across all dtypes at 600 s cold.
-Unlike on slower SATA storage, the gap does not close at longer durations for `i32` and `f32`.
+On this server, storage is fast enough that `hound`'s per-sample CPU loop is the bottleneck even cold: `audio_samples_io` is 1.9–4.5× faster across all dtypes at 600 s cold.
+Unlike on slower SATA storage, the gap does not close at longer durations.
 Any benchmark that cites only LLC-warm figures without qualifying the LLC size is overstating the practical advantage for single-pass dataset work.
 
 #### Practical implications
 
 **Reads.** For workloads where files are read repeatedly or the working set fits in the LLC, `audio_samples_io`'s warm-cache advantage is large enough to matter and should be the deciding factor.
-For cold, single-pass reads, `audio_samples_io` remains faster across all dtypes on this server (5.2× for `i16`, 2.2× for `i32`, 3.6× for `f32` at 600 s cold) — storage is no longer the equaliser here, because the server's storage is fast enough that `hound`'s CPU bottleneck is still exposed.
+For cold, single-pass reads, `audio_samples_io` remains faster across all dtypes on this server (4.5× for `i16`, 1.9× for `i32`, 3.3× for `f32` at 600 s cold): storage is no longer the equaliser here, because the server's storage is fast enough that `hound`'s CPU bottleneck is still exposed.
 
 **Streaming reads.** The advantage transfers fully to the streaming path at every chunk size tested.
 Applications can choose processing block sizes based entirely on algorithmic or latency requirements without any I/O throughput penalty.
 
-**Writes.** The advantage is significant for `i32` and `f32` (3× and 2.4× at 60 s), and near-parity for `i16` (1.1×) where both libraries use an equivalent bulk-write path.
-At the smallest chunk size (512 samples) both libraries are within a few percent; as chunk size grows, `audio_samples_io` pulls ahead.
-For most applications the write difference does not dominate the decision, but `audio_samples_io` has no write-path caveat remaining and is the faster library at all chunk sizes of 1,024 and above across all dtypes.
+**Writes.** At 10 s the advantage is modest for `i16` (≈ 1.05×) and more meaningful for `i32` and `f32` (≈ 2.5× and ≈ 2.1×); at longer durations the advantage grows substantially. For streamed writes, the advantage is chunk-size dependent: `audio_samples_io` is slower than `hound` for `i16` at very small chunks (512 samples) but faster from 4,096 samples upward across all dtypes.
 
 #### API and ergonomics
 
@@ -741,11 +806,11 @@ On the write side, `WavSpec` must be fully specified before writing starts, and 
 
 `audio_samples_io` inverts this.
 `read::<_, i16>(path)` is a single call that returns an `AudioSamples<i16>`, a channel-aware struct that carries its own sample rate, frame count, and channel count.
-There is no manual header dispatch, no interleaved `Vec` to reinterpret, and for the one-shot write path no `finalize()` step — the write is completed before `write()` returns.
+There is no manual header dispatch, no interleaved `Vec` to reinterpret, and for the one-shot write path no `finalize()` step: the write is completed before `write()` returns.
 The `sample_rate!` macro produces a `NonZeroU32` at compile time, making a zero sample rate a build error rather than a runtime panic.
 Even before reaching for advanced features (resampling, filtering, spectral transforms), the core API is genuinely less error-prone for audio work.
 
-The argument that `hound` is "simpler" requires qualification.
+The argument that `hound` is 'simpler' requires qualification.
 It has a smaller surface area, but smaller surface area is not the same as simpler to use correctly.
 The user is responsible for more decisions and more invariants.
 `audio_samples_io` encodes more of those invariants in the type system and handles more of the bookkeeping automatically.
@@ -764,7 +829,7 @@ For projects that will do any meaningful audio work, this matters more than the 
 
 `hound` v3.5.1 has zero production dependencies. The `cpal` entry in its dependency tree is a dev-dependency used for playback examples only; nothing in it reaches any downstream consumer of the library. Any project that depends on `hound` compiles exactly `hound` and nothing else.
 
-`audio_samples_io` v0.3.0 (with the `bare-bones` feature on `audio_samples` v1.0.9 and the `wav` feature on `audio_samples_io`) brings a moderate but well-motivated tree. The direct production dependencies of `audio_samples_io` itself are: `bytemuck` (zero-copy type casting), `memmap2` (memory-mapped files, which requires `libc`), `ndarray`, `non-empty-iter`, `non-empty-slice`, and `thiserror`. The `audio_samples` crate adds: `bytemuck`, `i24` (24-bit integer type, which transitively requires `ndarray` and `num-traits`), `ndarray`, `non-empty-iter`, `non-empty-slice`, `num-complex`, `num-traits`, and `thiserror`.
+`audio_samples_io` v0.3.1 (with the `bare-bones` feature on `audio_samples` v1.0.9 and the `wav` feature on `audio_samples_io`) brings a moderate but well-motivated tree. The direct production dependencies of `audio_samples_io` itself are: `bytemuck` (zero-copy type casting), `memmap2` (memory-mapped files, which requires `libc`), `ndarray`, `non-empty-iter`, `non-empty-slice`, and `thiserror`. The `audio_samples` crate adds: `bytemuck`, `i24` (24-bit integer type, which transitively requires `ndarray` and `num-traits`), `ndarray`, `non-empty-iter`, `non-empty-slice`, `num-complex`, `num-traits`, and `thiserror`.
 
 Every dependency in this list has a clear role. `bytemuck` and `memmap2` back the fast zero-copy I/O path. `ndarray` is the storage layer for `AudioSamples<T>`. `thiserror` handles error types. `num-traits` arrives transitively via `i24`, which enables 24-bit integer support. `non-empty-iter` and `non-empty-slice` are what enforce the non-empty audio and non-zero channel guarantees at the type level. None of these are incidental. Notably, the heavier optional capabilities of `audio_samples` (parallel processing via `rayon`, plotting support) are not present under `bare-bones`; they are behind separate feature flags and incur no compile cost unless explicitly enabled. When the spectral transform feature is enabled, [`spectrograms`](https://github.com/jmg049/spectrograms) enters the graph as an additional dependency; it is optional and incurs no cost when not used.
 
@@ -787,10 +852,43 @@ Finally, repeating the cold-cache read benchmarks on NVMe storage (where sequent
 
 Both libraries solve the same problem (reading and writing WAV files in Rust), but they do so from fundamentally different positions.
 
-`hound` is a well-established library with a long track record in the Rust ecosystem. Its API is minimal and its behaviour is predictable, but "minimal" is not the same as simple to use correctly: the user is responsible for manual header dispatch, interpreting flat interleaved output, and a `finalize()` call whose omission causes any finalisation error to be silently swallowed by the `Drop` implementation rather than returned to the caller. Its one unambiguous advantage is zero transitive dependencies, which carries real weight in environments where the dependency graph is audited or constrained.
+`hound` is a well-established library with a long track record in the Rust ecosystem. Its API is minimal and its behaviour is predictable, but 'minimal' is not the same as simple to use correctly: the user is responsible for manual header dispatch, interpreting flat interleaved output, and a `finalize()` call whose omission causes any finalisation error to be silently swallowed by the `Drop` implementation rather than returned to the caller. Its one unambiguous advantage is zero transitive dependencies, which carries real weight in environments where the dependency graph is audited or constrained.
 
-`audio_samples_io` takes a structurally different position. Its read path (a bulk memory load followed by a pointer cast) is inherently faster than any per-sample iterator, and the benchmarks confirm it: up to 154× faster on LLC-warm reads, 4–119× for DRAM-warm reads at intermediate durations, and 2.2–5.2× faster on cold reads — because on this server's fast storage, `hound`'s per-sample CPU loop remains the bottleneck even without a page-cache advantage. The write advantage is substantial for `i32` and `f32` (3× and 2.4× respectively at 60 s) and near-parity for `i16`, where both libraries use an equivalent bulk-write path. Beyond raw performance, the API is easier to use correctly: a single read call returns a typed, channel-aware struct with sample rate and frame count embedded; writes complete atomically; and invalid audio is structurally harder to construct by accident. With the `bare-bones` feature, the dependency tree is moderate and every crate in it has a clear, specific purpose; the heavier optional capabilities (parallel processing, plotting) are behind separate feature flags and compile only when requested.
+`audio_samples_io` takes a structurally different position. Its read path (a bulk memory load followed by a pointer cast) is inherently faster than any per-sample iterator, and the benchmarks confirm it: up to 105× faster on LLC-warm reads, 2.5–9× for DRAM-warm reads at long durations, and 1.9–4.5× faster on cold reads, because on this server's fast storage `hound`'s per-sample CPU loop remains the bottleneck even without a page-cache advantage. The write advantage is measurable across all dtypes at medium-to-large chunk sizes: ≈ 2.5× and ≈ 2.1× for `i32` and `f32` at 10 s bulk; ≈ 1.83×, ≈ 2.10×, and ≈ 1.78× for `i16`, `i32`, and `f32` at 600 s streamed with 4,096-sample chunks. Beyond raw performance, the API is easier to use correctly: a single read call returns a typed, channel-aware struct with sample rate and frame count embedded; writes complete atomically; and invalid audio is structurally harder to construct by accident. With the `bare-bones` feature, the dependency tree is moderate and every crate in it has a clear, specific purpose; the heavier optional capabilities (parallel processing, plotting) are behind separate feature flags and compile only when requested.
 
-The warm-cache speedup figures deserve context. LLC-warm figures (up to 154×) apply when the file fits in the processor's LLC — typical for repeated access to smaller files. DRAM-warm figures (4–119×) apply when the file is larger than the LLC but still in-memory. Cold figures (2–5×) apply to single-pass reads on fast storage. A benchmark that cites only the highest figures without qualifying the cache regime overstates the practical advantage for large single-pass datasets — though on NVMe-class storage, the cold figures would likely remain meaningful.
+The warm-cache speedup figures deserve context. LLC-warm figures (up to 105×) apply when the file fits in the processor's LLC, typical for repeated access to smaller files. DRAM-warm figures (2.5–9×) apply when the file is larger than the LLC but still in-memory. Cold figures (1.9–4.5×) apply to single-pass reads on fast storage. A benchmark that cites only the highest figures without qualifying the cache regime overstates the practical advantage for large single-pass datasets, though on NVMe-class storage the cold figures would likely remain meaningful.
 
-For new Rust projects doing audio work, `audio_samples_io` is the stronger default: faster across reads at every measured cache regime, meaningfully faster for `i32`/`f32` writes, less error-prone by construction, and the dependency overhead is manageable with feature flags. `hound` remains the right choice when zero transitive dependencies is a hard requirement, when integrating with an existing `hound`-based codebase, or when the workload is write-only with `i16` at small chunk sizes — the one remaining scenario where performance is near-parity.
+For new Rust projects doing audio work, `audio_samples_io` is the stronger default: faster across reads at every measured cache regime, faster writes across all dtypes at medium-to-large chunk sizes, less error-prone by construction, and the dependency overhead is manageable with feature flags. `hound` remains the right choice when zero transitive dependencies is a hard requirement or when integrating with an existing `hound`-based codebase.
+
+<script>
+(function () {
+  var box = document.getElementById('chart-lightbox');
+  if (!box) return;
+  var img = box.querySelector('img');
+
+  function open(src, alt) {
+    img.src = src;
+    img.alt = alt || '';
+    box.classList.add('open');
+    box.setAttribute('aria-hidden', 'false');
+  }
+  function close() {
+    box.classList.remove('open');
+    box.setAttribute('aria-hidden', 'true');
+    img.src = '';
+  }
+
+  document.querySelectorAll('a.chart-zoom').forEach(function (a) {
+    a.addEventListener('click', function (e) {
+      e.preventDefault();
+      var inner = a.querySelector('img');
+      open(a.getAttribute('href'), inner ? inner.alt : '');
+    });
+  });
+
+  box.addEventListener('click', close);
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') close();
+  });
+})();
+</script>
