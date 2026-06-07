@@ -9,7 +9,7 @@ use audio_samples_io::{
     create_streamed, open_streamed,
     traits::{AudioStreamWrite, AudioStreamWriter},
 };
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
 const DURATIONS_S: &[u64] = &[1, 5, 10, 30, 60, 300, 600];
 const CHUNK_SIZES: &[usize] = &[512, 1024, 4096, 8192, 16384];
@@ -214,14 +214,16 @@ fn aus_streamed_read<T: StandardSample + 'static>(path: &Path, chunk_size: usize
         AudioSamples::<T>::zeros_multi(nz_ch, nz_chunk, nz_sr)
     };
     while streamed.remaining_frames() > 0 {
-        streamed
-            .read_frames_into(&mut buffer, nz_chunk)
-            .unwrap();
+        streamed.read_frames_into(&mut buffer, nz_chunk).unwrap();
         black_box(&buffer);
     }
 }
 
-fn aus_streamed_write<T: StandardSample>(path: &Path, chunk: &AudioSamples<T>, total_frames: usize) {
+fn aus_streamed_write<T: StandardSample>(
+    path: &Path,
+    chunk: &AudioSamples<T>,
+    total_frames: usize,
+) {
     let mut writer = create_streamed::<_, T>(path, 1, 44_100).unwrap();
     let chunk_frames = chunk.len().get();
     let mut written = 0;
@@ -321,19 +323,17 @@ fn bench_bulk_write(c: &mut Criterion) {
                         let signal: Vec<i16> = (0..total_frames)
                             .map(|n| {
                                 let t = n as f32 / 44_100.0;
-                                ((t * 440.0 * 2.0 * std::f32::consts::PI).sin()
-                                    * i16::MAX as f32) as i16
+                                ((t * 440.0 * 2.0 * std::f32::consts::PI).sin() * i16::MAX as f32)
+                                    as i16
                             })
                             .collect();
-                        let aus_signal = audio_samples_io::read::<_, i16>(
-                            &wav_path(dur, "i16", 1),
-                        )
-                        .unwrap_or_else(|_| {
-                            AudioSamples::<i16>::zeros_mono(
-                                NonZeroUsize::new(total_frames).unwrap(),
-                                sr,
-                            )
-                        });
+                        let aus_signal = audio_samples_io::read::<_, i16>(&wav_path(dur, "i16", 1))
+                            .unwrap_or_else(|_| {
+                                AudioSamples::<i16>::zeros_mono(
+                                    NonZeroUsize::new(total_frames).unwrap(),
+                                    sr,
+                                )
+                            });
                         group.bench_function(BenchmarkId::new(&fn_name_h, &param), |b| {
                             b.iter_custom(|iters| {
                                 let mut total = Duration::ZERO;
@@ -361,19 +361,17 @@ fn bench_bulk_write(c: &mut Criterion) {
                         let signal: Vec<i32> = (0..total_frames)
                             .map(|n| {
                                 let t = n as f32 / 44_100.0;
-                                ((t * 440.0 * 2.0 * std::f32::consts::PI).sin()
-                                    * i32::MAX as f32) as i32
+                                ((t * 440.0 * 2.0 * std::f32::consts::PI).sin() * i32::MAX as f32)
+                                    as i32
                             })
                             .collect();
-                        let aus_signal = audio_samples_io::read::<_, i32>(
-                            &wav_path(dur, "i32", 1),
-                        )
-                        .unwrap_or_else(|_| {
-                            AudioSamples::<i32>::zeros_mono(
-                                NonZeroUsize::new(total_frames).unwrap(),
-                                sr,
-                            )
-                        });
+                        let aus_signal = audio_samples_io::read::<_, i32>(&wav_path(dur, "i32", 1))
+                            .unwrap_or_else(|_| {
+                                AudioSamples::<i32>::zeros_mono(
+                                    NonZeroUsize::new(total_frames).unwrap(),
+                                    sr,
+                                )
+                            });
                         group.bench_function(BenchmarkId::new(&fn_name_h, &param), |b| {
                             b.iter_custom(|iters| {
                                 let mut total = Duration::ZERO;
@@ -404,15 +402,13 @@ fn bench_bulk_write(c: &mut Criterion) {
                                 (t * 440.0 * 2.0 * std::f32::consts::PI).sin()
                             })
                             .collect();
-                        let aus_signal = audio_samples_io::read::<_, f32>(
-                            &wav_path(dur, "f32", 1),
-                        )
-                        .unwrap_or_else(|_| {
-                            AudioSamples::<f32>::zeros_mono(
-                                NonZeroUsize::new(total_frames).unwrap(),
-                                sr,
-                            )
-                        });
+                        let aus_signal = audio_samples_io::read::<_, f32>(&wav_path(dur, "f32", 1))
+                            .unwrap_or_else(|_| {
+                                AudioSamples::<f32>::zeros_mono(
+                                    NonZeroUsize::new(total_frames).unwrap(),
+                                    sr,
+                                )
+                            });
                         group.bench_function(BenchmarkId::new(&fn_name_h, &param), |b| {
                             b.iter_custom(|iters| {
                                 let mut total = Duration::ZERO;
@@ -533,7 +529,8 @@ fn bench_streamed_write(c: &mut Criterion) {
                                 .map(|n| {
                                     let t = n as f32 / 44_100.0;
                                     ((t * 440.0 * 2.0 * std::f32::consts::PI).sin()
-                                        * i16::MAX as f32) as i16
+                                        * i16::MAX as f32)
+                                        as i16
                                 })
                                 .collect();
                             let aus_chunk = AudioSamples::<i16>::zeros_mono(nz_chunk, sr);
@@ -565,7 +562,8 @@ fn bench_streamed_write(c: &mut Criterion) {
                                 .map(|n| {
                                     let t = n as f32 / 44_100.0;
                                     ((t * 440.0 * 2.0 * std::f32::consts::PI).sin()
-                                        * i32::MAX as f32) as i32
+                                        * i32::MAX as f32)
+                                        as i32
                                 })
                                 .collect();
                             let aus_chunk = AudioSamples::<i32>::zeros_mono(nz_chunk, sr);
@@ -755,5 +753,13 @@ fn bench_cold_streamed_read(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_bulk_read, bench_bulk_write, bench_streamed_read, bench_streamed_write, bench_cold_read, bench_cold_streamed_read);
+criterion_group!(
+    benches,
+    bench_bulk_read,
+    bench_bulk_write,
+    bench_streamed_read,
+    bench_streamed_write,
+    bench_cold_read,
+    bench_cold_streamed_read
+);
 criterion_main!(benches);
