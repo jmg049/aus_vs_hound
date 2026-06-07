@@ -103,12 +103,16 @@ Bulk read speedup of <code>audio_samples_io</code> over <code>hound</code> (spee
 </figcaption>
 </figure>
 
-**Quick reference**
+## TLDR
 
- | Use `hound` when | Use `audio_samples_io` when |
- |:---|:---|
- | Zero transitive dependencies is a hard requirement (embedded, WASM, audited supply chains) | Performance matters: faster reads at every cache regime; faster writes across all dtypes at medium-to-large chunk sizes |
- | Integrating with an existing `hound`-based codebase | You want a typed, channel-aware API that encodes format invariants at compile time |
+| Use `hound` when | Use `audio_samples_io` when |
+|:---|:---|
+| Zero transitive dependencies is a hard requirement (embedded, WASM, audited supply chains) | Performance matters: faster reads in every cache scenario; faster writes at medium-to-large chunk sizes |
+| Integrating with an existing `hound`-based codebase | You want a typed, channel-aware API that encodes format invariants at compile time |
+
+Cold reads (single-pass, approximately storage-bound): `audio_samples_io` is 1.9–4.5× faster than `hound` across `i16`, `i32`, and `f32` on the test machine. DRAM-warm reads: 2.5–8.6×. Streamed reads at 4,096-sample chunks: 10–35× at 60 s. Streamed writes at 4,096-sample chunks, 600 s: 1.78–2.10× across all types, with a small-chunk `i16` caveat. The 105× figure is an LLC-warm repeated-access result for 60 s `i16` bulk reads; it is not the representative comparison for single-pass workloads, but is representative of workloads where a lot of audio is repeatedly accessed, e.g. machine learning.
+
+---
 
 WAV files (`.wav`) are among the most common formats for storing sampled audio data. It most commonly stores uncompressed linear PCM, preserving the source samples exactly at the cost of file size, though the container can also carry compressed codecs.
 
@@ -120,9 +124,11 @@ In Rust, the de facto library for reading and writing `.wav` files is [`hound` b
 
 This article compares both crates for reading and writing `.wav` files: their APIs, their design philosophies, and their measured performance. The comparison is most directly applicable to general-purpose Rust audio work on standard targets; where zero-dependency constraints apply, `hound`'s position is largely uncontested and the performance comparison is secondary.
 
-The article is structured in four parts: a side-by-side API walkthrough with working code examples, a benchmark methodology section, results across four conditions (bulk and streamed read/write), and a discussion covering implementation-level causes, practical implications, and broader ecosystem context. The results sections are intentionally detailed, with numbers that require careful qualification by cache regime and signal duration.[^repo] Readers primarily interested in the practical recommendation can read the API sections and skip directly to the Conclusion.
+The article is structured in four parts: a side-by-side API walkthrough with working code examples, a benchmark methodology section, results across four conditions (bulk and streamed read/write), and a discussion covering implementation-level causes, practical implications, and broader ecosystem context. The results sections are intentionally detailed, with numbers that require careful qualification by cache scenario and signal duration.[^repo] Readers primarily interested in the practical recommendation can read the API sections and skip directly to the Conclusion.
 
 [^repo]: The benchmark harness, raw timing data, and analysis scripts are published at [github.com/jmg049/aus_vs_hound](https://github.com/jmg049/aus_vs_hound).
+
+**What this benchmark does not test.** Malformed or non-standard WAV files (e.g. RF64/WAVE64, broadcast WAV metadata, unusual `LIST` chunks); compressed codecs inside the WAV container; surround formats beyond mono/stereo; network-attached or spinning-disk storage; and independently verified fully-cold cache state (the cold-read setup uses `POSIX_FADV_DONTNEED`, which is advisory).
 
 ### A Look at Both Crates
 
@@ -321,16 +327,15 @@ For the one-shot `write()` path, there is no manual `finalize()` step: the write
 You open a `StreamedReader`, read metadata from it directly, allocate a buffer sized to match, then pull frames in a loop, all from the same open handle:
 
 ```rust
-use audio_samples::AudioSamples;
+use audio_samples::{AudioSamples, nzu};
 use audio_samples_io::open_streamed;
-use std::num::{NonZeroU32, NonZeroUsize};
 
 fn main() {
-    let chunk_size = NonZeroUsize::new(1024).unwrap();
+    let chunk_size  nzu!(1024);
 
     // Open once: channel count and sample rate are available on the live reader.
     let mut streamed = open_streamed("audio.wav").unwrap();
-    let sr = NonZeroU32::new(streamed.sample_rate()).unwrap();
+    let sr = streamed.sample_rate;
 
     // Allocate once; read_frames_into reuses this allocation every iteration.
     let mut buffer = AudioSamples::<i16>::zeros_mono(chunk_size, sr);
@@ -406,8 +411,8 @@ The benchmark harness (`benches/wav_benches.rs`), raw per-iteration results (CSV
 | Crate | Version |
 |:------|:--------|
 | `hound` | 3.5.1 |
-| `audio_samples` | 1.0.9 (`bare-bones` feature) |
-| `audio_samples_io` | 0.3.1 (`wav` feature) |
+| `audio_samples` | 1.0.11 (`bare-bones` feature) |
+| `audio_samples_io` | 0.3.2 (`wav` feature) |
 
 #### Test environment
 
@@ -497,9 +502,9 @@ Where cv is high, OS scheduling or filesystem jitter is likely a contributing fa
 `audio_samples_io` is substantially faster than `hound` for bulk reads across every dtype and duration tested.
 The speedup is highest at intermediate durations and shows a pronounced discontinuity around the processor's last-level cache (LLC) capacity.
 For `i16`, the speedup peaks at approximately 105× at 60 s, where the 5.3 MB file is firmly LLC-resident.
-The 300 s file (≈ 26 MB) also fits within the 32 MiB LLC and maintains a 53× speedup; the 600 s file (≈ 50 MB) spills to DRAM and the speedup falls to 8.6×.
-For `i32` and `f32` (four bytes per sample), the LLC boundary falls between 60 s and 300 s: the speedup is approximately 29× for both `i32` and `f32` at 60 s (LLC-resident), dropping to approximately 3× for `i32` and 2.5× for `f32` at 300–600 s once files exceed the LLC.
-In absolute terms, `hound` reads a 600 s `i16` mono file (≈ 50 MB) in 272 ms on average; `audio_samples_io` reads the same file in 31.7 ms.
+The 300 s file (≈ 26 MB) also fits within the 32 MiB LLC and maintains a 53× speedup; the 600 s file (≈ 53 MB) spills to DRAM and the speedup falls to 8.6×.
+For `i32` and `f32` (four bytes per sample), the LLC boundary falls between 60 s and 300 s: the speedup is approximately 29× for `i32` and 21× for `f32` at 60 s (LLC-resident), dropping to 3.3–3.4× for `i32` and 2.5× for `f32` at 300–600 s once files exceed the LLC.
+In absolute terms, `hound` reads a 600 s `i16` mono file (≈ 53 MB) in 271.5 ms on average; `audio_samples_io` reads the same file in 31.7 ms.
 The spread across samples is also much tighter for `audio_samples_io`: its standard deviation is consistently smaller than `hound`'s at short and medium durations.
 
 The table below shows the `audio_samples_io` speedup over `hound` across all tested durations for mono signals. The figures above show the underlying throughput curves.
@@ -518,10 +523,23 @@ The table below shows the `audio_samples_io` speedup over `hound` across all tes
 
 > Speedup = `hound` avg / `aus` avg (values > 1 mean `audio_samples_io` is faster). Propagated 1σ uncertainty (σ_R = R√((σ_H/H)² + (σ_A/A)²)) is included in the full per-condition data in the published CSV.
 
+**600 s · mono · warm-cache bulk read** (100 Criterion samples)
+
+| Benchmark | avg (ms) | cv |
+|:----------|--------:|---:|
+| `hound` · `i16` | 271.507 | 0.016 |
+| `aus` · `i16` | 31.717 | 0.036 |
+| | | |
+| `hound` · `i32` | 227.914 | 0.036 |
+| `aus` · `i32` | 69.372 | 0.054 |
+| | | |
+| `hound` · `f32` | 159.134 | 0.037 |
+| `aus` · `f32` | 63.233 | 0.024 |
+
 The step-change in speedup reflects the LLC capacity of this machine.
 For `i16` mono, the file at 60 s is ≈ 5.3 MB and fits well within the LLC, giving `audio_samples_io` a 105× advantage reading at L3 bandwidth.
-The 300 s file (≈ 26 MB) also fits within the 32 MiB LLC, but its larger footprint increases cache pressure, and the speedup settles at 53×; at 600 s the 50 MB file spills to DRAM and the speedup falls to 8.6×.
-For `i32` and `f32` the LLC boundary falls between 60 s and 300 s: the 60 s file (≈ 10.6 MB) is LLC-resident (29× for both dtypes), while the 300 s file (≈ 53 MB) exceeds the LLC so the speedup drops to approximately 3× for `i32` and 2.5× for `f32`.
+The 300 s file (≈ 26 MB) also fits within the 32 MiB LLC, but its larger footprint increases cache pressure, and the speedup settles at 53×; at 600 s the 53 MB file spills to DRAM and the speedup falls to 8.6×.
+For `i32` and `f32` the LLC boundary falls between 60 s and 300 s: the 60 s file (≈ 10.6 MB) is LLC-resident (29× for `i32`, 21× for `f32`), while the 300 s file (≈ 53 MB) exceeds the LLC so the speedup drops to 3.3–3.4× for `i32` and 2.5× for `f32`.
 
 #### Stereo (2-channel) Bulk Read
 
@@ -664,8 +682,7 @@ CV values are 4–14%.
 </figure>
 
 To characterise storage-bound performance, bulk read benchmarks were repeated with `posix_fadvise(POSIX_FADV_DONTNEED)` called before each measured iteration to advise the kernel to evict the file from the page cache.
-`POSIX_FADV_DONTNEED` is advisory: the kernel may ignore it, and eviction was not independently verified (e.g. via `vmtouch`); results should be treated as approximately storage-bound rather than guaranteed cold.
-Unlike in earlier iterations of this benchmark which used a smaller fixed iteration count, the cold-cache run collects the same 100 Criterion samples as all other conditions; `POSIX_FADV_DONTNEED` is issued inside `iter_custom` before each individual timed iteration.
+`POSIX_FADV_DONTNEED` is advisory: the kernel may ignore it, and eviction was not independently verified (e.g. via `vmtouch`); results should be treated as approximately storage-bound rather than guaranteed cold. `POSIX_FADV_DONTNEED` is issued inside `iter_custom` before each individual timed iteration.
 The storage device here appears to be significantly faster than typical SATA storage, and `hound`'s per-sample CPU overhead is still clearly visible as a bottleneck even under cold-read conditions.
 
 **600 s · mono · cold-cache read** (100 Criterion samples)
@@ -702,13 +719,15 @@ Even with `BufReader` absorbing the underlying syscall overhead, every sample st
 Over a 600 s `i16` file (approximately 26.5 million samples), this amounts to 26.5 million iterations of that stack.
 
 `audio_samples_io`'s non-streaming path takes a fundamentally different approach.
-The entire file is loaded into memory via `BufReader::read_to_end()` or memory-mapped with a sequential read-ahead hint ([`wav_file.rs`, lines 324–339, `audio_samples_io` v0.3.1](https://github.com/jmg049/audio_samples_io/blob/v0.3.1/src/wav_file.rs#L324-L339)).
-For aligned data, samples are then made available via an unsafe `core::slice::from_raw_parts` reinterpretation of the raw byte slice ([`data.rs`, lines 85–87, `audio_samples_io` v0.3.1](https://github.com/jmg049/audio_samples_io/blob/v0.3.1/src/data.rs#L85-L87)): no copy, no per-sample conversion, just a type-level assertion that the bytes are already in the right format.
-When the in-file type matches the requested output type (`S == T`), an additional `unsafe mem::transmute` skips even the `Vec` conversion step ([`wav_file.rs`, line 203, `audio_samples_io` v0.3.1](https://github.com/jmg049/audio_samples_io/blob/v0.3.1/src/wav_file.rs#L203)).
+The entire file is loaded into memory via `BufReader::read_to_end()` or memory-mapped with a sequential read-ahead hint ([`wav/wav_file.rs`, lines 312–325, `audio_samples_io` v0.3.2](https://github.com/jmg049/audio_samples_io/blob/v0.3.2/src/wav/wav_file.rs#L312-L325)).
+For aligned data, samples are then made available via an unsafe `core::slice::from_raw_parts` reinterpretation of the raw byte slice ([`wav/data.rs`, lines 83–85, `audio_samples_io` v0.3.2](https://github.com/jmg049/audio_samples_io/blob/v0.3.2/src/wav/data.rs#L83-L85)): no copy, no per-sample conversion, just a type-level assertion that the bytes are already in the right format.
+When the in-file type matches the requested output type (`S == T`), an additional `unsafe mem::transmute` skips even the `Vec` conversion step ([`wav/data.rs`, line 201, `audio_samples_io` v0.3.2](https://github.com/jmg049/audio_samples_io/blob/v0.3.2/src/wav/data.rs#L201)).
 In the common case the entire 'decode' step reduces to a single pointer cast followed by a bounds check.
 
+**Safety boundary.** The `from_raw_parts` path is entered only after the WAV header has been validated against four conditions: the declared sample format matches the requested Rust type `S`; the bit depth and block alignment are consistent with `S`; the data is little-endian (mandatory in standard WAV); and the buffer meets the alignment requirements of `S`. A mismatch on any of these returns an error before the unsafe block is reached. The `mem::transmute` path additionally requires `S == T` at the type level, enforced by the compiler. Malformed WAVs that pass header validation but carry corrupt data will produce garbage samples. The same guarantee that `hound` provides, since neither library checksums sample data.
+
 The streaming path retains most of this advantage.
-`audio_samples_io`'s `read_frames_into` issues a single `read()` call for all bytes of the requested chunk ([`streaming.rs`, line 467, `audio_samples_io` v0.3.1](https://github.com/jmg049/audio_samples_io/blob/v0.3.1/src/streaming.rs#L467)), writes them into a reused internal `Vec<u8>` buffer, and then converts in bulk using `chunks_exact(2).map(...)` or `chunks_exact(4).map(...)`: one pass through the byte slice at the cost of a single iterator chain.
+`audio_samples_io`'s `read_frames_into` issues a single `read()` call for all bytes of the requested chunk ([`wav/streaming.rs`, line 445, `audio_samples_io` v0.3.2](https://github.com/jmg049/audio_samples_io/blob/v0.3.2/src/wav/streaming.rs#L445)), writes them into a reused internal `Vec<u8>` buffer, and then converts in bulk using `chunks_exact(2).map(...)` or `chunks_exact(4).map(...)`: one pass through the byte slice at the cost of a single iterator chain.
 `hound`'s streamed path is identical to its bulk path from an internal standpoint: the same per-sample iterator, called the same number of times regardless of what chunk size the caller imposes.
 
 #### Why writes diverge for i32 and f32
@@ -726,7 +745,7 @@ The `i16` write results therefore compare each library's best available path (�
 #### Predictability as an independent result
 
 Beyond mean latency, the cv values carry their own information.
-`audio_samples_io`'s read times have standard deviations consistently much smaller than `hound`'s at short and medium durations (e.g. ≈ 78× smaller at 60 s for `i16`, where `hound`'s σ is 0.468 ms vs `audio_samples_io`'s 0.006 ms, derived from avg × cv); at 600 s, where both implementations are DRAM-bound, the ratio narrows to ≈ 4×.
+`audio_samples_io`'s read times have standard deviations consistently much smaller than `hound`'s at short and medium durations (e.g. ≈ 78× smaller at 60 s for `i16`, where `hound`'s σ is 0.471 ms vs `audio_samples_io`'s 0.006 ms, derived from avg × cv); at 600 s, where both implementations are DRAM-bound, the ratio narrows to ≈ 4×.
 This follows from the implementation: a path that performs one bulk read and one pointer cast has far fewer opportunities to accumulate scheduling jitter than one that iterates millions of times.
 `hound`'s cv climbs at longer durations (e.g. cv 0.103 for `i32` at 30 s vs 0.050 for `audio_samples_io`), reflecting the probabilistic accumulation of interrupt-induced pauses over a long per-sample iteration loop.
 
@@ -759,11 +778,11 @@ Whether the relative ordering between libraries changes on spinning disk or netw
 **Page-cache warmth and LLC effects.** Criterion's warmup phase brings file-sized working sets into the page cache before measurement begins.
 For files smaller than the server's LLC, warmup also brings the working set into the LLC itself, and `audio_samples_io`'s throughput at those sizes reflects L3 bandwidth rather than DRAM bandwidth.
 The headline speedup figures (up to 105×) should therefore be understood as LLC-warm figures for appropriately-sized files.
-For files larger than the LLC, performance is DRAM-bound and speedup figures are lower (8.6× for `i16` at 600 s, ≈ 3× for `i32`, ≈ 2.5× for `f32`).
+For files larger than the LLC, performance is DRAM-bound and speedup figures are lower (8.6× for `i16` at 600 s, 3.3–3.4× for `i32`, 2.5× for `f32`).
 The cold-cache benchmarks measure the storage-bound case directly; on this server, storage is fast enough that `hound`'s CPU bottleneck remains the dominant constraint even cold, so the convergence to near-parity observed on slower SATA storage does not occur here.
 
 **Mono and stereo, but not surround.** Both mono (1-channel) and stereo (2-channel) signals were benchmarked.
-Speedup profiles are essentially identical across the two channel counts, suggesting `audio_samples_io`'s SIMD deinterleaving path adds negligible overhead at these file sizes.
+Speedup profiles are essentially identical across the two channel counts, suggesting `audio_samples_io`'s deinterleaving path adds negligible overhead at these file sizes.
 Whether the same holds for surround formats (5.1, 7.1), where the interleave stride is larger, remains untested.
 
 **Fixed sample count across all durations.** Criterion collects 100 samples per benchmark regardless of signal duration.
@@ -810,10 +829,8 @@ There is no manual header dispatch, no interleaved `Vec` to reinterpret, and for
 The `sample_rate!` macro produces a `NonZeroU32` at compile time, making a zero sample rate a build error rather than a runtime panic.
 Even before reaching for advanced features (resampling, filtering, spectral transforms), the core API is genuinely less error-prone for audio work.
 
-The argument that `hound` is 'simpler' requires qualification.
-It has a smaller surface area, but smaller surface area is not the same as simpler to use correctly.
-The user is responsible for more decisions and more invariants.
-`audio_samples_io` encodes more of those invariants in the type system and handles more of the bookkeeping automatically.
+`hound` has the smaller API surface; `audio_samples_io` encodes more format invariants for users who want structured audio data.
+Smaller surface area is not the same as easier to use correctly: with `hound` the user is responsible for more decisions (header dispatch, interleaved layout, `finalize()`), but that trade-off is entirely reasonable when the priority is a minimal dependency count and a simpler mental model.
 
 #### The broader ecosystem
 
@@ -827,9 +844,9 @@ For projects that will do any meaningful audio work, this matters more than the 
 
 #### Dependencies
 
-`hound` v3.5.1 has zero production dependencies. The `cpal` entry in its dependency tree is a dev-dependency used for playback examples only; nothing in it reaches any downstream consumer of the library. Any project that depends on `hound` compiles exactly `hound` and nothing else.
+`hound` v3.5.1 has zero production dependencies. Any project that depends on `hound` compiles exactly `hound` and nothing else.
 
-`audio_samples_io` v0.3.1 (with the `bare-bones` feature on `audio_samples` v1.0.9 and the `wav` feature on `audio_samples_io`) brings a moderate but well-motivated tree. The direct production dependencies of `audio_samples_io` itself are: `bytemuck` (zero-copy type casting), `memmap2` (memory-mapped files, which requires `libc`), `ndarray`, `non-empty-iter`, `non-empty-slice`, and `thiserror`. The `audio_samples` crate adds: `bytemuck`, `i24` (24-bit integer type, which transitively requires `ndarray` and `num-traits`), `ndarray`, `non-empty-iter`, `non-empty-slice`, `num-complex`, `num-traits`, and `thiserror`.
+`audio_samples_io` v0.3.2 (with the `bare-bones` feature on `audio_samples` v1.0.11 and the `wav` feature on `audio_samples_io`) brings a moderate but well-motivated tree. The direct production dependencies of `audio_samples_io` itself are: `bytemuck` (zero-copy type casting), `memmap2` (memory-mapped files, which requires `libc`), `ndarray`, `non-empty-iter`, `non-empty-slice`, and `thiserror`. The `audio_samples` crate adds: `bytemuck`, `i24` (24-bit integer type, which transitively requires `ndarray` and `num-traits`), `ndarray`, `non-empty-iter`, `non-empty-slice`, `num-complex`, `num-traits`, and `thiserror`.
 
 Every dependency in this list has a clear role. `bytemuck` and `memmap2` back the fast zero-copy I/O path. `ndarray` is the storage layer for `AudioSamples<T>`. `thiserror` handles error types. `num-traits` arrives transitively via `i24`, which enables 24-bit integer support. `non-empty-iter` and `non-empty-slice` are what enforce the non-empty audio and non-zero channel guarantees at the type level. None of these are incidental. Notably, the heavier optional capabilities of `audio_samples` (parallel processing via `rayon`, plotting support) are not present under `bare-bones`; they are behind separate feature flags and incur no compile cost unless explicitly enabled. When the spectral transform feature is enabled, [`spectrograms`](https://github.com/jmg049/spectrograms) enters the graph as an additional dependency; it is optional and incurs no cost when not used.
 
@@ -854,11 +871,11 @@ Both libraries solve the same problem (reading and writing WAV files in Rust), b
 
 `hound` is a well-established library with a long track record in the Rust ecosystem. Its API is minimal and its behaviour is predictable, but 'minimal' is not the same as simple to use correctly: the user is responsible for manual header dispatch, interpreting flat interleaved output, and a `finalize()` call whose omission causes any finalisation error to be silently swallowed by the `Drop` implementation rather than returned to the caller. Its one unambiguous advantage is zero transitive dependencies, which carries real weight in environments where the dependency graph is audited or constrained.
 
-`audio_samples_io` takes a structurally different position. Its read path (a bulk memory load followed by a pointer cast) is inherently faster than any per-sample iterator, and the benchmarks confirm it: up to 105× faster on LLC-warm reads, 2.5–9× for DRAM-warm reads at long durations, and 1.9–4.5× faster on cold reads, because on this server's fast storage `hound`'s per-sample CPU loop remains the bottleneck even without a page-cache advantage. The write advantage is measurable across all dtypes at medium-to-large chunk sizes: ≈ 2.5× and ≈ 2.1× for `i32` and `f32` at 10 s bulk; ≈ 1.83×, ≈ 2.10×, and ≈ 1.78× for `i16`, `i32`, and `f32` at 600 s streamed with 4,096-sample chunks. Beyond raw performance, the API is easier to use correctly: a single read call returns a typed, channel-aware struct with sample rate and frame count embedded; writes complete atomically; and invalid audio is structurally harder to construct by accident. With the `bare-bones` feature, the dependency tree is moderate and every crate in it has a clear, specific purpose; the heavier optional capabilities (parallel processing, plotting) are behind separate feature flags and compile only when requested.
+`audio_samples_io` takes a structurally different position. Its read path (a bulk memory load followed by a pointer cast) is inherently faster than any per-sample iterator, and the benchmarks confirm it: up to 105× faster on LLC-warm reads, 2.5–8.6× for DRAM-warm reads at long durations, and 1.9–4.5× faster on cold reads, because on this server's fast storage `hound`'s per-sample CPU loop remains the bottleneck even without a page-cache advantage. The write advantage is measurable across all dtypes at medium-to-large chunk sizes: ≈ 2.5× and ≈ 2.1× for `i32` and `f32` at 10 s bulk; ≈ 1.83×, ≈ 2.10×, and ≈ 1.78× for `i16`, `i32`, and `f32` at 600 s streamed with 4,096-sample chunks. Beyond raw performance, the API is easier to use correctly: a single read call returns a typed, channel-aware struct with sample rate and frame count embedded; writes complete atomically; and invalid audio is structurally harder to construct by accident. With the `bare-bones` feature, the dependency tree is moderate and every crate in it has a clear, specific purpose; the heavier optional capabilities (parallel processing, plotting) are behind separate feature flags and compile only when requested.
 
-The warm-cache speedup figures deserve context. LLC-warm figures (up to 105×) apply when the file fits in the processor's LLC, typical for repeated access to smaller files. DRAM-warm figures (2.5–9×) apply when the file is larger than the LLC but still in-memory. Cold figures (1.9–4.5×) apply to single-pass reads on fast storage. A benchmark that cites only the highest figures without qualifying the cache regime overstates the practical advantage for large single-pass datasets, though on NVMe-class storage the cold figures would likely remain meaningful.
+The warm-cache speedup figures deserve context. LLC-warm figures (up to 105×) apply when the file fits in the processor's LLC, typical for repeated access to smaller files. DRAM-warm figures (2.5–8.6×) apply when the file is larger than the LLC but still in-memory. Cold figures (1.9–4.5×) apply to single-pass reads on fast storage. A benchmark that cites only the highest figures without qualifying the cache scenario overstates the practical advantage for large single-pass datasets, though on NVMe-class storage the cold figures would likely remain meaningful.
 
-For new Rust projects doing audio work, `audio_samples_io` is the stronger default: faster across reads at every measured cache regime, faster writes across all dtypes at medium-to-large chunk sizes, less error-prone by construction, and the dependency overhead is manageable with feature flags. `hound` remains the right choice when zero transitive dependencies is a hard requirement or when integrating with an existing `hound`-based codebase.
+For new Rust projects doing audio work, `audio_samples_io` is the stronger default: faster across reads at every measured cache scenario, faster writes across all dtypes at medium-to-large chunk sizes, less error-prone by construction, and the dependency overhead is manageable with feature flags. `hound` remains the right choice when zero transitive dependencies is a hard requirement or when integrating with an existing `hound`-based codebase.
 
 <script>
 (function () {
